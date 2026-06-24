@@ -20,6 +20,7 @@ CALENDAR_TOP = 5
 DETAIL_LEFT = 38
 STATUS_DONE = "done"
 STATUS_MISSED = "missed"
+STATUS_PENDING = "pending"
 DEFAULT_DB_PATH = Path("habit_tracker.sqlite3")
 
 
@@ -130,13 +131,14 @@ class HabitStore:
         self.connection.commit()
 
     def habits_for_day(self, day: date) -> list[HabitStatus]:
+        default_status = STATUS_DONE if day <= date.today() else STATUS_PENDING
         rows = self.connection.execute(
             """
             SELECT
                 habits.id,
                 habits.name,
                 habits.start_date,
-                COALESCE(habit_logs.status, 'done') AS status
+                COALESCE(habit_logs.status, ?) AS status
             FROM habits
             LEFT JOIN habit_logs
                 ON habit_logs.habit_id = habits.id
@@ -144,7 +146,7 @@ class HabitStore:
             WHERE habits.start_date <= ?
             ORDER BY habits.start_date, habits.name
             """,
-            (day.isoformat(), day.isoformat()),
+            (default_status, day.isoformat(), day.isoformat()),
         ).fetchall()
 
         return [
@@ -174,6 +176,8 @@ def status_label(status: str) -> str:
         return "Done"
     if status == STATUS_MISSED:
         return "Missed"
+    if status == STATUS_PENDING:
+        return "Pending"
     return status.title()
 
 
@@ -217,7 +221,10 @@ class CalendarApp:
             self.message = "Select a day first."
             return
 
-        name = self._prompt(screen, f"New daily habit from {selected.isoformat()}: ")
+        name = self._prompt(screen, f"New daily habit from {selected.isoformat()} (Esc cancels): ")
+        if name is None:
+            self.message = "Habit creation cancelled."
+            return
         if not name:
             self.message = "Habit creation cancelled."
             return
@@ -227,7 +234,7 @@ class CalendarApp:
         except ValueError as exc:
             self.message = str(exc)
             return
-        self.message = f"Added '{name}'. It defaults to Done from {selected.isoformat()}."
+        self.message = f"Added '{name}'. Past and current days default to Done."
 
     def set_habit_status(self, habit_id: int, status: str) -> None:
         selected = self.selected_date
@@ -350,25 +357,43 @@ class CalendarApp:
         if self.message:
             self._addstr(screen, footer_y, CALENDAR_LEFT, self._truncate(self.message, 70))
         self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Done/Missed. Keys: q quit, arrows/PgUp/PgDn, t today, a add.")
-        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar markers: + active habits all done, ! at least one missed.")
+        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar markers: + active habits all done, ! at least one missed, future days stay pending.")
 
-    def _prompt(self, screen: "curses.window", prompt: str) -> str:
+    def _prompt(self, screen: "curses.window", prompt: str) -> str | None:
         y = CALENDAR_TOP + 10
+        value: list[str] = []
         screen.move(y, 0)
         screen.clrtoeol()
         self._addstr(screen, y, CALENDAR_LEFT, prompt)
-        curses.echo()
         curses.curs_set(1)
         try:
-            raw = screen.getstr(y, CALENDAR_LEFT + len(prompt), 40)
+            while True:
+                input_x = CALENDAR_LEFT + len(prompt) + len(value)
+                screen.move(y, input_x)
+                screen.refresh()
+                key = screen.getch()
+                if key == 27:
+                    return None
+                if key in (curses.KEY_ENTER, 10, 13):
+                    return "".join(value).strip()
+                if key in (curses.KEY_BACKSPACE, 8, 127):
+                    if value:
+                        value.pop()
+                        screen.move(y, CALENDAR_LEFT + len(prompt))
+                        screen.clrtoeol()
+                        self._addstr(screen, y, CALENDAR_LEFT + len(prompt), "".join(value))
+                    continue
+                if 32 <= key <= 126 and len(value) < 40:
+                    value.append(chr(key))
+                    self._addstr(screen, y, CALENDAR_LEFT + len(prompt), "".join(value))
         finally:
-            curses.noecho()
             curses.curs_set(0)
-        return raw.decode("utf-8", errors="ignore").strip()
 
     def _status_style(self, status: str) -> int:
         if status == STATUS_MISSED:
             return self._color(4) | curses.A_BOLD
+        if status == STATUS_PENDING:
+            return curses.A_DIM
         return self._color(5) | curses.A_BOLD
 
     def _color(self, pair_number: int) -> int:
