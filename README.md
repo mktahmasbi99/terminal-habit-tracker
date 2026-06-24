@@ -24,25 +24,25 @@ No third-party Python packages are required.
 Start the interactive app:
 
 ```bash
-python3 calendar_view.py
+python3 terminal_habit_tracker.py
 ```
 
 Open a specific month:
 
 ```bash
-python3 calendar_view.py --month 6 --year 2026
+python3 terminal_habit_tracker.py --month 6 --year 2026
 ```
 
 Use a custom database path:
 
 ```bash
-python3 calendar_view.py --db /path/to/habits.sqlite3
+python3 terminal_habit_tracker.py --db /path/to/habits.sqlite3
 ```
 
 Print a non-interactive calendar view:
 
 ```bash
-python3 calendar_view.py --plain
+python3 terminal_habit_tracker.py --plain
 ```
 
 ## Controls
@@ -52,9 +52,15 @@ python3 calendar_view.py --plain
 - Click `+ Add daily habit` or press `a` to add a habit for the selected date
 - Press `Esc` while adding a habit to cancel without saving
 - Click `Done` or `Missed` to set a habit status for the selected date
+- Press `/` to enter a command
+- Use `/help` to list hidden commands
+- Use `/delhabit` to open habit deletion
+- Type `DELETE` when prompted to confirm an irreversible habit deletion
+- Use `/quit` to quit from the command prompt
 - Press left/right arrows or Page Up/Page Down to move between months
 - Press `t` to jump to today
-- Press `q` or `Esc` to quit
+- Press `Esc` to go back from secondary screens or cancel a command prompt
+- Press `q` or `Esc` on the main screen to quit
 
 ## Habit Status Behavior
 

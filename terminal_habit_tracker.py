@@ -48,6 +48,13 @@ class CalendarSelection:
 
 
 @dataclass(frozen=True)
+class Habit:
+    habit_id: int
+    name: str
+    start_date: date
+
+
+@dataclass(frozen=True)
 class HabitStatus:
     habit_id: int
     name: str
@@ -130,6 +137,27 @@ class HabitStore:
         )
         self.connection.commit()
 
+    def list_habits(self) -> list[Habit]:
+        rows = self.connection.execute(
+            """
+            SELECT id, name, start_date
+            FROM habits
+            ORDER BY start_date, name
+            """
+        ).fetchall()
+        return [
+            Habit(
+                habit_id=int(row["id"]),
+                name=str(row["name"]),
+                start_date=date.fromisoformat(str(row["start_date"])),
+            )
+            for row in rows
+        ]
+
+    def delete_habit(self, habit_id: int) -> None:
+        self.connection.execute("DELETE FROM habits WHERE id = ?", (habit_id,))
+        self.connection.commit()
+
     def habits_for_day(self, day: date) -> list[HabitStatus]:
         default_status = STATUS_DONE if day <= date.today() else STATUS_PENDING
         rows = self.connection.execute(
@@ -187,6 +215,7 @@ class CalendarApp:
     store: HabitStore
     selected_day: int | None = None
     use_color: bool = True
+    view: str = "main"
     message: str = ""
     hitboxes: list[HitBox] = field(default_factory=list)
 
@@ -214,6 +243,40 @@ class CalendarApp:
     def select_day(self, day: int) -> None:
         self.selected_day = day
         self.message = ""
+
+    def open_manage_habits(self) -> None:
+        self.view = "manage_habits"
+        self.message = ""
+
+    def open_help(self) -> None:
+        self.view = "help"
+        self.message = ""
+
+    def go_back(self) -> None:
+        if self.view in {"help", "manage_habits"}:
+            self.view = "main"
+        self.message = ""
+
+    def run_command(self, screen: "curses.window") -> bool:
+        command = self._prompt(screen, "Command: ", initial_value="/")
+        if command is None:
+            self.message = "Command cancelled."
+            return True
+
+        normalized = command.strip().lower()
+        normalized = f"/{normalized.lstrip('/')}"
+
+        if normalized == "/help":
+            self.open_help()
+            return True
+        if normalized == "/delhabit":
+            self.open_manage_habits()
+            return True
+        if normalized == "/quit":
+            return False
+
+        self.message = f"Unknown command: {command}. Try /help."
+        return True
 
     def add_habit(self, screen: "curses.window") -> None:
         selected = self.selected_date
@@ -244,6 +307,14 @@ class CalendarApp:
         self.store.set_status(habit_id, selected, status)
         self.message = f"Marked habit as {status_label(status)} on {selected.isoformat()}."
 
+    def delete_habit(self, screen: "curses.window", habit_id: int, habit_name: str) -> None:
+        confirmation = self._prompt(screen, f"Irreversible. Type DELETE to delete '{self._truncate(habit_name, 18)}': ")
+        if confirmation != "DELETE":
+            self.message = "Habit deletion cancelled."
+            return
+        self.store.delete_habit(habit_id)
+        self.message = f"Deleted '{habit_name}'."
+
     def handle_click(self, screen: "curses.window", y: int, x: int) -> None:
         for hitbox in self.hitboxes:
             if not hitbox.contains(y, x):
@@ -252,6 +323,11 @@ class CalendarApp:
                 self.move_month(-1)
             elif hitbox.name == "next":
                 self.move_month(1)
+            elif hitbox.name == "back":
+                self.go_back()
+            elif hitbox.name == "delete_habit" and hitbox.value is not None:
+                habit_id, habit_name = hitbox.value
+                self.delete_habit(screen, int(habit_id), str(habit_name))
             elif hitbox.name == "day" and hitbox.value is not None:
                 self.select_day(int(hitbox.value))
             elif hitbox.name == "add_habit":
@@ -271,10 +347,15 @@ class CalendarApp:
             screen.refresh()
             return
 
-        self._draw_header(screen)
-        self._draw_calendar(screen)
-        self._draw_day_panel(screen)
-        self._draw_footer(screen)
+        if self.view == "help":
+            self._draw_help_page(screen)
+        elif self.view == "manage_habits":
+            self._draw_manage_habits_page(screen)
+        else:
+            self._draw_header(screen)
+            self._draw_calendar(screen)
+            self._draw_day_panel(screen)
+            self._draw_footer(screen)
         screen.refresh()
 
     def _draw_header(self, screen: "curses.window") -> None:
@@ -352,19 +433,70 @@ class CalendarApp:
             self.hitboxes.append(HitBox("set_status", y + 1, done_x, done_x + len(done_label) - 1, (habit.habit_id, STATUS_DONE)))
             self.hitboxes.append(HitBox("set_status", y + 1, missed_x, missed_x + len(missed_label) - 1, (habit.habit_id, STATUS_MISSED)))
 
+    def _draw_help_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Commands", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        commands = [
+            ("/help", "Show this command list."),
+            ("/delhabit", "Open habit deletion. Deletion requires typing DELETE."),
+            ("/quit", "Quit the app."),
+        ]
+        for index, (command, description) in enumerate(commands):
+            y = 4 + index * 2
+            self._addstr(screen, y, CALENDAR_LEFT, command, curses.A_BOLD)
+            self._addstr(screen, y, CALENDAR_LEFT + 14, description)
+        self._addstr(screen, 12, CALENDAR_LEFT, "Press / from the main screen to enter a command.")
+        self._draw_message(screen, 15)
+
+    def _draw_manage_habits_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Manage Habits", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        habits = self.store.list_habits()
+        if not habits:
+            self._addstr(screen, 4, CALENDAR_LEFT, "No habits to manage.")
+            self._draw_message(screen)
+            return
+
+        self._addstr(screen, 3, CALENDAR_LEFT, "Delete Habit", curses.A_BOLD)
+        self._addstr(screen, 4, CALENDAR_LEFT, "Deleting a habit permanently removes its saved daily statuses.")
+
+        for index, habit in enumerate(habits[:9]):
+            y = 6 + index
+            habit_label = f"{self._truncate(habit.name, 28)} ({habit.start_date.isoformat()})"
+            delete_label = "Delete"
+            delete_x = DETAIL_LEFT + 20
+            self._addstr(screen, y, CALENDAR_LEFT, habit_label)
+            self._addstr(screen, y, delete_x, delete_label, curses.A_BOLD)
+            self.hitboxes.append(HitBox("delete_habit", y, delete_x, delete_x + len(delete_label) - 1, (habit.habit_id, habit.name)))
+
+        if len(habits) > 9:
+            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
+        self._draw_message(screen, 16)
+
     def _draw_footer(self, screen: "curses.window") -> None:
         footer_y = CALENDAR_TOP + 8
-        if self.message:
-            self._addstr(screen, footer_y, CALENDAR_LEFT, self._truncate(self.message, 70))
-        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Done/Missed. Keys: q quit, arrows/PgUp/PgDn, t today, a add.")
+        self._draw_message(screen)
+        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Done/Missed. Keys: / commands, q quit, arrows/PgUp/PgDn, t today, a add.")
         self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar markers: + active habits all done, ! at least one missed, future days stay pending.")
 
-    def _prompt(self, screen: "curses.window", prompt: str) -> str | None:
+    def _draw_message(self, screen: "curses.window", y: int = CALENDAR_TOP + 8) -> None:
+        if self.message:
+            self._addstr(screen, y, CALENDAR_LEFT, self._truncate(self.message, 70))
+
+    def _prompt(self, screen: "curses.window", prompt: str, initial_value: str = "") -> str | None:
         y = CALENDAR_TOP + 10
-        value: list[str] = []
+        value = list(initial_value)
         screen.move(y, 0)
         screen.clrtoeol()
         self._addstr(screen, y, CALENDAR_LEFT, prompt)
+        if value:
+            self._addstr(screen, y, CALENDAR_LEFT + len(prompt), "".join(value))
         curses.curs_set(1)
         try:
             while True:
@@ -455,15 +587,22 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
         app.render(screen)
         key = screen.getch()
 
-        if key in (ord("q"), ord("Q"), 27):
+        if key in (ord("q"), ord("Q")):
             break
-        if key in (curses.KEY_LEFT, curses.KEY_PPAGE):
+        if key == 27:
+            if app.view == "main":
+                break
+            app.go_back()
+        elif app.view == "main" and key == ord("/"):
+            if not app.run_command(screen):
+                break
+        elif app.view == "main" and key in (curses.KEY_LEFT, curses.KEY_PPAGE):
             app.move_month(-1)
-        elif key in (curses.KEY_RIGHT, curses.KEY_NPAGE):
+        elif app.view == "main" and key in (curses.KEY_RIGHT, curses.KEY_NPAGE):
             app.move_month(1)
-        elif key in (ord("a"), ord("A")):
+        elif app.view == "main" and key in (ord("a"), ord("A")):
             app.add_habit(screen)
-        elif key == ord("t"):
+        elif app.view == "main" and key == ord("t"):
             today = date.today()
             app.selection = CalendarSelection(today.year, today.month)
             app.selected_day = today.day
