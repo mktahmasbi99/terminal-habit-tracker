@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
-"""Interactive monthly calendar for a habit tracker terminal app."""
+"""Interactive daily habit tracker with a navigable monthly calendar."""
 
 from __future__ import annotations
 
 import argparse
 import calendar
 import curses
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
+from typing import Any
 
 
 WEEKDAY_HEADER = "Mo Tu We Th Fr Sa Su"
 CELL_WIDTH = 4
 CALENDAR_LEFT = 4
 CALENDAR_TOP = 5
+DETAIL_LEFT = 38
+STATUS_DONE = "done"
+STATUS_MISSED = "missed"
+DEFAULT_DB_PATH = Path("habit_tracker.sqlite3")
 
 
 @dataclass(frozen=True)
@@ -40,22 +47,143 @@ class CalendarSelection:
 
 
 @dataclass(frozen=True)
+class HabitStatus:
+    habit_id: int
+    name: str
+    start_date: date
+    status: str
+
+
+@dataclass(frozen=True)
 class HitBox:
     name: str
     y: int
     x1: int
     x2: int
-    value: int | None = None
+    value: Any = None
 
     def contains(self, y: int, x: int) -> bool:
         return self.y == y and self.x1 <= x <= self.x2
 
 
+class HabitStore:
+    """SQLite persistence for daily habits and explicit daily status edits."""
+
+    def __init__(self, db_path: Path | str = DEFAULT_DB_PATH) -> None:
+        self.db_path = Path(db_path)
+        self.connection = sqlite3.connect(self.db_path)
+        self.connection.row_factory = sqlite3.Row
+        self.initialize()
+
+    def close(self) -> None:
+        self.connection.close()
+
+    def initialize(self) -> None:
+        self.connection.executescript(
+            """
+            PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS habits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS habit_logs (
+                habit_id INTEGER NOT NULL,
+                log_date TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('done', 'missed')),
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (habit_id, log_date),
+                FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE
+            );
+            """
+        )
+        self.connection.commit()
+
+    def create_habit(self, name: str, start_date: date) -> int:
+        cleaned = " ".join(name.split())
+        if not cleaned:
+            raise ValueError("Habit name cannot be empty.")
+
+        cursor = self.connection.execute(
+            "INSERT INTO habits (name, start_date) VALUES (?, ?)",
+            (cleaned, start_date.isoformat()),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def set_status(self, habit_id: int, day: date, status: str) -> None:
+        if status not in {STATUS_DONE, STATUS_MISSED}:
+            raise ValueError(f"Unknown habit status: {status}")
+
+        self.connection.execute(
+            """
+            INSERT INTO habit_logs (habit_id, log_date, status, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(habit_id, log_date)
+            DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP
+            """,
+            (habit_id, day.isoformat(), status),
+        )
+        self.connection.commit()
+
+    def habits_for_day(self, day: date) -> list[HabitStatus]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                habits.id,
+                habits.name,
+                habits.start_date,
+                COALESCE(habit_logs.status, 'done') AS status
+            FROM habits
+            LEFT JOIN habit_logs
+                ON habit_logs.habit_id = habits.id
+                AND habit_logs.log_date = ?
+            WHERE habits.start_date <= ?
+            ORDER BY habits.start_date, habits.name
+            """,
+            (day.isoformat(), day.isoformat()),
+        ).fetchall()
+
+        return [
+            HabitStatus(
+                habit_id=int(row["id"]),
+                name=str(row["name"]),
+                start_date=date.fromisoformat(str(row["start_date"])),
+                status=str(row["status"]),
+            )
+            for row in rows
+        ]
+
+    def month_summary(self, year: int, month: int) -> dict[int, tuple[int, int]]:
+        summary: dict[int, tuple[int, int]] = {}
+        _, last_day = calendar.monthrange(year, month)
+        for day_number in range(1, last_day + 1):
+            current_day = date(year, month, day_number)
+            statuses = self.habits_for_day(current_day)
+            done_count = sum(1 for habit in statuses if habit.status == STATUS_DONE)
+            missed_count = sum(1 for habit in statuses if habit.status == STATUS_MISSED)
+            summary[day_number] = (done_count, missed_count)
+        return summary
+
+
+def status_label(status: str) -> str:
+    if status == STATUS_DONE:
+        return "Done"
+    if status == STATUS_MISSED:
+        return "Missed"
+    return status.title()
+
+
 @dataclass
 class CalendarApp:
     selection: CalendarSelection
+    store: HabitStore
     selected_day: int | None = None
     use_color: bool = True
+    message: str = ""
     hitboxes: list[HitBox] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -65,17 +193,51 @@ class CalendarApp:
         ):
             self.selected_day = current.day
 
+    @property
+    def selected_date(self) -> date | None:
+        if self.selected_day is None:
+            return None
+        return date(self.selection.year, self.selection.month, self.selected_day)
+
     def move_month(self, delta: int) -> None:
         if delta < 0:
             self.selection = self.selection.previous_month()
         else:
             self.selection = self.selection.next_month()
         self.selected_day = None
+        self.message = ""
 
     def select_day(self, day: int) -> None:
         self.selected_day = day
+        self.message = ""
 
-    def handle_click(self, y: int, x: int) -> None:
+    def add_habit(self, screen: "curses.window") -> None:
+        selected = self.selected_date
+        if selected is None:
+            self.message = "Select a day first."
+            return
+
+        name = self._prompt(screen, f"New daily habit from {selected.isoformat()}: ")
+        if not name:
+            self.message = "Habit creation cancelled."
+            return
+
+        try:
+            self.store.create_habit(name, selected)
+        except ValueError as exc:
+            self.message = str(exc)
+            return
+        self.message = f"Added '{name}'. It defaults to Done from {selected.isoformat()}."
+
+    def set_habit_status(self, habit_id: int, status: str) -> None:
+        selected = self.selected_date
+        if selected is None:
+            self.message = "Select a day first."
+            return
+        self.store.set_status(habit_id, selected, status)
+        self.message = f"Marked habit as {status_label(status)} on {selected.isoformat()}."
+
+    def handle_click(self, screen: "curses.window", y: int, x: int) -> None:
         for hitbox in self.hitboxes:
             if not hitbox.contains(y, x):
                 continue
@@ -84,7 +246,12 @@ class CalendarApp:
             elif hitbox.name == "next":
                 self.move_month(1)
             elif hitbox.name == "day" and hitbox.value is not None:
-                self.select_day(hitbox.value)
+                self.select_day(int(hitbox.value))
+            elif hitbox.name == "add_habit":
+                self.add_habit(screen)
+            elif hitbox.name == "set_status" and hitbox.value is not None:
+                habit_id, status = hitbox.value
+                self.set_habit_status(int(habit_id), str(status))
             return
 
     def render(self, screen: "curses.window") -> None:
@@ -92,13 +259,14 @@ class CalendarApp:
         self.hitboxes.clear()
         height, width = screen.getmaxyx()
 
-        if height < 14 or width < 36:
-            screen.addstr(0, 0, "Make the terminal at least 36x14.")
+        if height < 17 or width < 76:
+            screen.addstr(0, 0, "Make the terminal at least 76x17.")
             screen.refresh()
             return
 
         self._draw_header(screen)
         self._draw_calendar(screen)
+        self._draw_day_panel(screen)
         self._draw_footer(screen)
         screen.refresh()
 
@@ -106,7 +274,7 @@ class CalendarApp:
         title = f"{calendar.month_name[self.selection.month]} {self.selection.year}"
         previous_label = "< Prev"
         next_label = "Next >"
-        title_x = max(0, (screen.getmaxyx()[1] - len(title)) // 2)
+        title_x = CALENDAR_LEFT + 8
         next_x = title_x + len(title) + 4
 
         self._addstr(screen, 1, CALENDAR_LEFT, previous_label, curses.A_BOLD)
@@ -118,6 +286,7 @@ class CalendarApp:
 
     def _draw_calendar(self, screen: "curses.window") -> None:
         today = date.today()
+        summary = self.store.month_summary(self.selection.year, self.selection.month)
         self._addstr(screen, CALENDAR_TOP - 2, CALENDAR_LEFT, WEEKDAY_HEADER, curses.A_BOLD)
 
         for row_index, week in enumerate(calendar.monthcalendar(self.selection.year, self.selection.month)):
@@ -138,23 +307,80 @@ class CalendarApp:
                 ):
                     style |= self._color(3) | curses.A_BOLD
 
-                label = f"{day:2}"
+                done_count, missed_count = summary.get(day, (0, 0))
+                marker = "!" if missed_count else "+" if done_count else " "
+                label = f"{day:2}{marker}"
                 self._addstr(screen, y, x, label, style)
                 self.hitboxes.append(HitBox("day", y, x, x + CELL_WIDTH - 2, day))
 
-    def _draw_footer(self, screen: "curses.window") -> None:
-        selected = "No day selected"
-        if self.selected_day is not None:
-            selected = f"Selected: {self.selection.year:04d}-{self.selection.month:02d}-{self.selected_day:02d}"
+    def _draw_day_panel(self, screen: "curses.window") -> None:
+        selected = self.selected_date
+        if selected is None:
+            self._addstr(screen, 1, DETAIL_LEFT, "Select a day", curses.A_BOLD)
+            self._addstr(screen, 3, DETAIL_LEFT, "Click a date to manage daily habits.")
+            return
 
+        self._addstr(screen, 1, DETAIL_LEFT, selected.isoformat(), self._color(1) | curses.A_BOLD)
+        add_label = "+ Add daily habit"
+        self._addstr(screen, 3, DETAIL_LEFT, add_label, curses.A_BOLD)
+        self.hitboxes.append(HitBox("add_habit", 3, DETAIL_LEFT, DETAIL_LEFT + len(add_label) - 1))
+
+        habits = self.store.habits_for_day(selected)
+        if not habits:
+            self._addstr(screen, 5, DETAIL_LEFT, "No habits active yet.")
+            self._addstr(screen, 6, DETAIL_LEFT, "Add one from this date to start tracking.")
+            return
+
+        for index, habit in enumerate(habits):
+            y = 5 + index * 3
+            self._addstr(screen, y, DETAIL_LEFT, self._truncate(habit.name, 24), curses.A_BOLD)
+            self._addstr(screen, y, DETAIL_LEFT + 26, status_label(habit.status), self._status_style(habit.status))
+
+            done_label = "Done"
+            missed_label = "Missed"
+            done_x = DETAIL_LEFT + 2
+            missed_x = DETAIL_LEFT + 11
+            self._addstr(screen, y + 1, done_x, done_label, curses.A_BOLD)
+            self._addstr(screen, y + 1, missed_x, missed_label, curses.A_BOLD)
+            self.hitboxes.append(HitBox("set_status", y + 1, done_x, done_x + len(done_label) - 1, (habit.habit_id, STATUS_DONE)))
+            self.hitboxes.append(HitBox("set_status", y + 1, missed_x, missed_x + len(missed_label) - 1, (habit.habit_id, STATUS_MISSED)))
+
+    def _draw_footer(self, screen: "curses.window") -> None:
         footer_y = CALENDAR_TOP + 8
-        self._addstr(screen, footer_y, CALENDAR_LEFT, selected)
-        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days or month controls. Keys: q quit, arrows/PgUp/PgDn navigate.")
+        if self.message:
+            self._addstr(screen, footer_y, CALENDAR_LEFT, self._truncate(self.message, 70))
+        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Done/Missed. Keys: q quit, arrows/PgUp/PgDn, t today, a add.")
+        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar markers: + active habits all done, ! at least one missed.")
+
+    def _prompt(self, screen: "curses.window", prompt: str) -> str:
+        y = CALENDAR_TOP + 10
+        screen.move(y, 0)
+        screen.clrtoeol()
+        self._addstr(screen, y, CALENDAR_LEFT, prompt)
+        curses.echo()
+        curses.curs_set(1)
+        try:
+            raw = screen.getstr(y, CALENDAR_LEFT + len(prompt), 40)
+        finally:
+            curses.noecho()
+            curses.curs_set(0)
+        return raw.decode("utf-8", errors="ignore").strip()
+
+    def _status_style(self, status: str) -> int:
+        if status == STATUS_MISSED:
+            return self._color(4) | curses.A_BOLD
+        return self._color(5) | curses.A_BOLD
 
     def _color(self, pair_number: int) -> int:
         if not self.use_color or not curses.has_colors():
             return curses.A_REVERSE
         return curses.color_pair(pair_number)
+
+    @staticmethod
+    def _truncate(text: str, max_length: int) -> str:
+        if len(text) <= max_length:
+            return text
+        return text[: max(0, max_length - 3)] + "..."
 
     @staticmethod
     def _addstr(screen: "curses.window", y: int, x: int, text: str, style: int = curses.A_NORMAL) -> None:
@@ -164,9 +390,10 @@ class CalendarApp:
         screen.addstr(y, max(0, x), text[: max(0, width - x - 1)], style)
 
 
-def build_month_view(selection: CalendarSelection) -> str:
+def build_month_view(selection: CalendarSelection, store: HabitStore | None = None) -> str:
     today = date.today()
     weeks = calendar.monthcalendar(selection.year, selection.month)
+    summary = store.month_summary(selection.year, selection.month) if store else {}
     lines = [f"{calendar.month_name[selection.month]} {selection.year}".center(20), WEEKDAY_HEADER]
 
     for week in weeks:
@@ -175,7 +402,8 @@ def build_month_view(selection: CalendarSelection) -> str:
             if day == 0:
                 day_cells.append("  ")
                 continue
-            marker = "*" if (
+            done_count, missed_count = summary.get(day, (0, 0))
+            marker = "!" if missed_count else "+" if done_count else "*" if (
                 day == today.day and selection.month == today.month and selection.year == today.year
             ) else " "
             day_cells.append(f"{day:2}{marker}".rstrip())
@@ -195,6 +423,8 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
         curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
         curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_CYAN)
         curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_RED)
+        curses.init_pair(5, curses.COLOR_BLACK, curses.COLOR_GREEN)
 
     while True:
         app.render(screen)
@@ -206,22 +436,25 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             app.move_month(-1)
         elif key in (curses.KEY_RIGHT, curses.KEY_NPAGE):
             app.move_month(1)
+        elif key in (ord("a"), ord("A")):
+            app.add_habit(screen)
         elif key == ord("t"):
             today = date.today()
             app.selection = CalendarSelection(today.year, today.month)
             app.selected_day = today.day
+            app.message = ""
         elif key == curses.KEY_MOUSE:
             try:
                 _, x, y, _, button_state = curses.getmouse()
             except curses.error:
                 continue
             if button_state & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
-                app.handle_click(y, x)
+                app.handle_click(screen, y, x)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Open an interactive monthly calendar view for a habit tracker."
+        description="Open an interactive daily habit tracker with a monthly calendar."
     )
     parser.add_argument(
         "-m",
@@ -236,6 +469,12 @@ def parse_args() -> argparse.Namespace:
         "--year",
         type=int,
         help="year to display; defaults to the current year",
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=DEFAULT_DB_PATH,
+        help=f"SQLite database path; defaults to {DEFAULT_DB_PATH}",
     )
     parser.add_argument(
         "--no-color",
@@ -253,13 +492,17 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     selection = CalendarSelection.from_args(args.year, args.month)
+    store = HabitStore(args.db)
 
-    if args.plain:
-        print(build_month_view(selection))
-        return
+    try:
+        if args.plain:
+            print(build_month_view(selection, store))
+            return
 
-    app = CalendarApp(selection=selection, use_color=not args.no_color)
-    curses.wrapper(run_curses, app)
+        app = CalendarApp(selection=selection, store=store, use_color=not args.no_color)
+        curses.wrapper(run_curses, app)
+    finally:
+        store.close()
 
 
 if __name__ == "__main__":

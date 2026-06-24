@@ -24,9 +24,13 @@ dist/
 .env
 .env.*
 !.env.example
+/prompts.txt
 
 # OS/editor noise
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+# Local app data
+habit_tracker.sqlite3
+habit_tracker.sqlite3-*
