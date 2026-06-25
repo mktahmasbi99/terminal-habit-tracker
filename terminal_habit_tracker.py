@@ -123,8 +123,16 @@ class HabitStore:
         return int(cursor.lastrowid)
 
     def set_status(self, habit_id: int, day: date, status: str) -> None:
-        if status not in {STATUS_DONE, STATUS_MISSED}:
+        if status not in {STATUS_DONE, STATUS_MISSED, STATUS_PENDING}:
             raise ValueError(f"Unknown habit status: {status}")
+
+        if status == STATUS_PENDING:
+            self.connection.execute(
+                "DELETE FROM habit_logs WHERE habit_id = ? AND log_date = ?",
+                (habit_id, day.isoformat()),
+            )
+            self.connection.commit()
+            return
 
         self.connection.execute(
             """
@@ -421,14 +429,17 @@ class CalendarApp:
         for index, habit in enumerate(habits):
             y = 5 + index * 3
             self._addstr(screen, y, DETAIL_LEFT, self._truncate(habit.name, 24), curses.A_BOLD)
-            self._addstr(screen, y, DETAIL_LEFT + 26, status_label(habit.status), self._status_style(habit.status))
 
+            pending_label = "Pending"
             done_label = "Done"
             missed_label = "Missed"
-            done_x = DETAIL_LEFT + 2
-            missed_x = DETAIL_LEFT + 11
-            self._addstr(screen, y + 1, done_x, done_label, curses.A_BOLD)
-            self._addstr(screen, y + 1, missed_x, missed_label, curses.A_BOLD)
+            pending_x = DETAIL_LEFT + 2
+            done_x = DETAIL_LEFT + 12
+            missed_x = DETAIL_LEFT + 21
+            self._addstr(screen, y + 1, pending_x, pending_label, self._action_style(habit.status, STATUS_PENDING))
+            self._addstr(screen, y + 1, done_x, done_label, self._action_style(habit.status, STATUS_DONE))
+            self._addstr(screen, y + 1, missed_x, missed_label, self._action_style(habit.status, STATUS_MISSED))
+            self.hitboxes.append(HitBox("set_status", y + 1, pending_x, pending_x + len(pending_label) - 1, (habit.habit_id, STATUS_PENDING)))
             self.hitboxes.append(HitBox("set_status", y + 1, done_x, done_x + len(done_label) - 1, (habit.habit_id, STATUS_DONE)))
             self.hitboxes.append(HitBox("set_status", y + 1, missed_x, missed_x + len(missed_label) - 1, (habit.habit_id, STATUS_MISSED)))
 
@@ -481,7 +492,7 @@ class CalendarApp:
     def _draw_footer(self, screen: "curses.window") -> None:
         footer_y = CALENDAR_TOP + 8
         self._draw_message(screen)
-        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Done/Missed. Keys: / commands, q quit, arrows/PgUp/PgDn, t today, a add.")
+        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Pending/Done/Missed. Keys: / commands, q quit, arrows/PgUp/PgDn, t today, a add.")
         self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar markers: + at least one done, ! at least one missed, unmarked days are pending.")
 
     def _draw_message(self, screen: "curses.window", y: int = CALENDAR_TOP + 8) -> None:
@@ -524,8 +535,13 @@ class CalendarApp:
         if status == STATUS_MISSED:
             return self._color(4) | curses.A_BOLD
         if status == STATUS_PENDING:
-            return curses.A_DIM
+            return self._color(6) | curses.A_BOLD
         return self._color(5) | curses.A_BOLD
+
+    def _action_style(self, current_status: str, action_status: str) -> int:
+        if current_status == action_status:
+            return self._status_style(action_status)
+        return curses.A_DIM
 
     def _color(self, pair_number: int) -> int:
         if not self.use_color or not curses.has_colors():
@@ -581,6 +597,7 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
         curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLUE)
         curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_RED)
         curses.init_pair(5, curses.COLOR_BLACK, curses.COLOR_GREEN)
+        curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_YELLOW)
 
     while True:
         app.render(screen)

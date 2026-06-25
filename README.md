@@ -1,13 +1,13 @@
 # Habit Tracker
 
-A small terminal habit tracker with a navigable monthly calendar. It lets you add daily habits from a selected start date, mark each habit as done or missed for a day, and persist the data locally in SQLite.
+A small terminal habit tracker with a navigable monthly calendar. It lets you add daily habits from a selected start date, mark each habit as pending, done, or missed for a day, and persist the data locally in SQLite.
 
 ## Features
 
 - Interactive monthly calendar in the terminal
 - Mouse support for selecting dates and controls
 - Daily habit creation from any selected date
-- Per-day habit status tracking: `Done`, `Missed`, or future `Pending`
+- Per-day habit status tracking: `Pending`, `Done`, or `Missed`
 - Calendar markers for days with completed or missed habits
 - Local SQLite persistence
 - Plain text month view for quick output or scripting
@@ -51,7 +51,7 @@ python3 terminal_habit_tracker.py --plain
 - Click `< Prev` or `Next >` to change months
 - Click `+ Add daily habit` or press `a` to add a habit for the selected date
 - Press `Esc` while adding a habit to cancel without saving
-- Click `Done` or `Missed` to set a habit status for the selected date
+- Click `Pending`, `Done`, or `Missed` to set a habit status for the selected date
 - Press `/` to enter a command
 - Use `/help` to list hidden commands
 - Use `/delhabit` to open habit deletion
@@ -70,6 +70,7 @@ For active habits:
 
 - Dates default to `Pending` until you mark them `Done` or `Missed`
 - Explicit `Done` or `Missed` choices are saved for that specific date
+- Choosing `Pending` clears the saved status for that habit and date
 
 Calendar markers:
 
