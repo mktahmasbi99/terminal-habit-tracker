@@ -166,6 +166,17 @@ class HabitStore:
         self.connection.execute("DELETE FROM habits WHERE id = ?", (habit_id,))
         self.connection.commit()
 
+    def rename_habit(self, habit_id: int, name: str) -> None:
+        cleaned = " ".join(name.split())
+        if not cleaned:
+            raise ValueError("Habit name cannot be empty.")
+
+        self.connection.execute(
+            "UPDATE habits SET name = ? WHERE id = ?",
+            (cleaned, habit_id),
+        )
+        self.connection.commit()
+
     def habits_for_day(self, day: date) -> list[HabitStatus]:
         rows = self.connection.execute(
             """
@@ -255,12 +266,16 @@ class CalendarApp:
         self.view = "manage_habits"
         self.message = ""
 
+    def open_rename_habits(self) -> None:
+        self.view = "rename_habits"
+        self.message = ""
+
     def open_help(self) -> None:
         self.view = "help"
         self.message = ""
 
     def go_back(self) -> None:
-        if self.view in {"help", "manage_habits"}:
+        if self.view in {"help", "manage_habits", "rename_habits"}:
             self.view = "main"
         self.message = ""
 
@@ -278,6 +293,9 @@ class CalendarApp:
             return True
         if normalized == "/delhabit":
             self.open_manage_habits()
+            return True
+        if normalized == "/renamehabit":
+            self.open_rename_habits()
             return True
         if normalized == "/quit":
             return False
@@ -304,7 +322,7 @@ class CalendarApp:
         except ValueError as exc:
             self.message = str(exc)
             return
-        self.message = f"Added '{name}'. Past and current days default to Done."
+        self.message = f"Added '{name}'. Dates default to Pending."
 
     def set_habit_status(self, habit_id: int, status: str) -> None:
         selected = self.selected_date
@@ -322,6 +340,23 @@ class CalendarApp:
         self.store.delete_habit(habit_id)
         self.message = f"Deleted '{habit_name}'."
 
+    def rename_habit(self, screen: "curses.window", habit_id: int, habit_name: str) -> None:
+        new_name = self._prompt(
+            screen,
+            f"Rename '{self._truncate(habit_name, 18)}' to: ",
+            initial_value=habit_name,
+        )
+        if new_name is None or not new_name:
+            self.message = "Habit rename cancelled."
+            return
+
+        try:
+            self.store.rename_habit(habit_id, new_name)
+        except ValueError as exc:
+            self.message = str(exc)
+            return
+        self.message = f"Renamed '{habit_name}' to '{new_name}'."
+
     def handle_click(self, screen: "curses.window", y: int, x: int) -> None:
         for hitbox in self.hitboxes:
             if not hitbox.contains(y, x):
@@ -335,6 +370,9 @@ class CalendarApp:
             elif hitbox.name == "delete_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
                 self.delete_habit(screen, int(habit_id), str(habit_name))
+            elif hitbox.name == "rename_habit" and hitbox.value is not None:
+                habit_id, habit_name = hitbox.value
+                self.rename_habit(screen, int(habit_id), str(habit_name))
             elif hitbox.name == "day" and hitbox.value is not None:
                 self.select_day(int(hitbox.value))
             elif hitbox.name == "add_habit":
@@ -358,6 +396,8 @@ class CalendarApp:
             self._draw_help_page(screen)
         elif self.view == "manage_habits":
             self._draw_manage_habits_page(screen)
+        elif self.view == "rename_habits":
+            self._draw_rename_habits_page(screen)
         else:
             self._draw_header(screen)
             self._draw_calendar(screen)
@@ -452,6 +492,7 @@ class CalendarApp:
         commands = [
             ("/help", "Show this command list."),
             ("/delhabit", "Open habit deletion. Deletion requires typing DELETE."),
+            ("/renamehabit", "Rename an existing habit."),
             ("/quit", "Quit the app."),
         ]
         for index, (command, description) in enumerate(commands):
@@ -484,6 +525,34 @@ class CalendarApp:
             self._addstr(screen, y, CALENDAR_LEFT, habit_label)
             self._addstr(screen, y, delete_x, delete_label, curses.A_BOLD)
             self.hitboxes.append(HitBox("delete_habit", y, delete_x, delete_x + len(delete_label) - 1, (habit.habit_id, habit.name)))
+
+        if len(habits) > 9:
+            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
+        self._draw_message(screen, 16)
+
+    def _draw_rename_habits_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Rename Habits", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        habits = self.store.list_habits()
+        if not habits:
+            self._addstr(screen, 4, CALENDAR_LEFT, "No habits to rename.")
+            self._draw_message(screen)
+            return
+
+        self._addstr(screen, 3, CALENDAR_LEFT, "Rename Habit", curses.A_BOLD)
+        self._addstr(screen, 4, CALENDAR_LEFT, "Choose a habit and enter its new name.")
+
+        for index, habit in enumerate(habits[:9]):
+            y = 6 + index
+            habit_label = f"{self._truncate(habit.name, 28)} ({habit.start_date.isoformat()})"
+            rename_label = "Rename"
+            rename_x = DETAIL_LEFT + 20
+            self._addstr(screen, y, CALENDAR_LEFT, habit_label)
+            self._addstr(screen, y, rename_x, rename_label, curses.A_BOLD)
+            self.hitboxes.append(HitBox("rename_habit", y, rename_x, rename_x + len(rename_label) - 1, (habit.habit_id, habit.name)))
 
         if len(habits) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
