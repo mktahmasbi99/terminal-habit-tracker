@@ -499,7 +499,7 @@ class CalendarApp:
             y = 4 + index * 2
             self._addstr(screen, y, CALENDAR_LEFT, command, curses.A_BOLD)
             self._addstr(screen, y, CALENDAR_LEFT + 14, description)
-        self._addstr(screen, 12, CALENDAR_LEFT, "Press / from the main screen to enter a command.")
+        self._addstr(screen, 12, CALENDAR_LEFT, "Press / from the main screen to enter a command. Press b to go back.")
         self._draw_message(screen, 15)
 
     def _draw_manage_habits_page(self, screen: "curses.window") -> None:
@@ -561,7 +561,7 @@ class CalendarApp:
     def _draw_footer(self, screen: "curses.window") -> None:
         footer_y = CALENDAR_TOP + 8
         self._draw_message(screen)
-        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Pending/Done/Missed. Keys: / commands, q quit, arrows/PgUp/PgDn, t today, a add.")
+        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Pending/Done/Missed. Keys: / commands, h help, q quit, arrows/PgUp/PgDn, t today, a add.")
         self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar markers: + at least one done, ! at least one missed, unmarked days are pending.")
 
     def _draw_message(self, screen: "curses.window", y: int = CALENDAR_TOP + 8) -> None:
@@ -709,13 +709,17 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
 
         if key in (ord("q"), ord("Q")):
             break
-        if key == 27:
+        if app.view != "main" and key in (ord("b"), ord("B")):
+            app.go_back()
+        elif key == 27:
             if app.view == "main":
                 break
             app.go_back()
         elif app.view == "main" and key == ord("/"):
             if not app.run_command(screen):
                 break
+        elif app.view == "main" and key in (ord("h"), ord("H")):
+            app.open_help()
         elif app.view == "main" and key in (curses.KEY_LEFT, curses.KEY_PPAGE):
             app.move_month(-1)
         elif app.view == "main" and key in (curses.KEY_RIGHT, curses.KEY_NPAGE):
