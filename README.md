@@ -52,7 +52,7 @@ python3 terminal_habit_tracker.py --plain
 - Click `+ Add daily habit` or press `a` to add a habit for the selected date
 - Press `Esc` while adding a habit to cancel without saving
 - Click `Pending`, `Done`, or `Missed` to set a habit status for the selected date
-- Press `/` to enter a command
+- Press `/` to enter a command; matching commands are suggested as you type, and `Tab` completes a single match
 - Use `/help` to list hidden commands
 - Use `/delhabit` to open habit deletion
 - Type `DELETE` when prompted to confirm an irreversible habit deletion

@@ -10,7 +10,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 
 WEEKDAY_HEADER = "Mo Tu We Th Fr Sa Su"
@@ -22,6 +22,12 @@ STATUS_DONE = "done"
 STATUS_MISSED = "missed"
 STATUS_PENDING = "pending"
 DEFAULT_DB_PATH = Path("habit_tracker.sqlite3")
+COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/help", "Show this command list."),
+    ("/delhabit", "Open habit deletion. Deletion requires typing DELETE."),
+    ("/renamehabit", "Rename an existing habit."),
+    ("/quit", "Quit the app."),
+)
 
 
 @dataclass(frozen=True)
@@ -280,7 +286,7 @@ class CalendarApp:
         self.message = ""
 
     def run_command(self, screen: "curses.window") -> bool:
-        command = self._prompt(screen, "Command: ", initial_value="/")
+        command = self._prompt(screen, "Command: ", initial_value="/", suggestions=COMMANDS)
         if command is None:
             self.message = "Command cancelled."
             return True
@@ -489,13 +495,7 @@ class CalendarApp:
         self._addstr(screen, 1, DETAIL_LEFT, "Commands", self._color(1) | curses.A_BOLD)
         self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
 
-        commands = [
-            ("/help", "Show this command list."),
-            ("/delhabit", "Open habit deletion. Deletion requires typing DELETE."),
-            ("/renamehabit", "Rename an existing habit."),
-            ("/quit", "Quit the app."),
-        ]
-        for index, (command, description) in enumerate(commands):
+        for index, (command, description) in enumerate(COMMANDS):
             y = 4 + index * 2
             self._addstr(screen, y, CALENDAR_LEFT, command, curses.A_BOLD)
             self._addstr(screen, y, CALENDAR_LEFT + 14, description)
@@ -568,14 +568,45 @@ class CalendarApp:
         if self.message:
             self._addstr(screen, y, CALENDAR_LEFT, self._truncate(self.message, 70))
 
-    def _prompt(self, screen: "curses.window", prompt: str, initial_value: str = "") -> str | None:
+    def _prompt(
+        self,
+        screen: "curses.window",
+        prompt: str,
+        initial_value: str = "",
+        suggestions: Sequence[tuple[str, str]] = (),
+    ) -> str | None:
         y = CALENDAR_TOP + 10
         value = list(initial_value)
-        screen.move(y, 0)
-        screen.clrtoeol()
-        self._addstr(screen, y, CALENDAR_LEFT, prompt)
-        if value:
+
+        def clear_line(row: int) -> None:
+            height, _ = screen.getmaxyx()
+            if 0 <= row < height:
+                screen.move(row, 0)
+                screen.clrtoeol()
+
+        def matching_suggestions() -> list[tuple[str, str]]:
+            typed = "".join(value).strip().lower()
+            if not typed:
+                return []
+            normalized = f"/{typed.lstrip('/')}"
+            return [item for item in suggestions if item[0].startswith(normalized)]
+
+        def render_prompt() -> None:
+            clear_line(y)
+            self._addstr(screen, y, CALENDAR_LEFT, prompt)
             self._addstr(screen, y, CALENDAR_LEFT + len(prompt), "".join(value))
+            for offset in range(1, 4):
+                clear_line(y + offset)
+            for offset, (command, description) in enumerate(matching_suggestions()[:3], start=1):
+                self._addstr(
+                    screen,
+                    y + offset,
+                    CALENDAR_LEFT + len(prompt),
+                    f"{command}  {description}",
+                    curses.A_DIM,
+                )
+
+        render_prompt()
         curses.curs_set(1)
         try:
             while True:
@@ -587,16 +618,20 @@ class CalendarApp:
                     return None
                 if key in (curses.KEY_ENTER, 10, 13):
                     return "".join(value).strip()
+                if key == 9 and suggestions:
+                    matches = matching_suggestions()
+                    if len(matches) == 1:
+                        value = list(matches[0][0])
+                    render_prompt()
+                    continue
                 if key in (curses.KEY_BACKSPACE, 8, 127):
                     if value:
                         value.pop()
-                        screen.move(y, CALENDAR_LEFT + len(prompt))
-                        screen.clrtoeol()
-                        self._addstr(screen, y, CALENDAR_LEFT + len(prompt), "".join(value))
+                        render_prompt()
                     continue
                 if 32 <= key <= 126 and len(value) < 40:
                     value.append(chr(key))
-                    self._addstr(screen, y, CALENDAR_LEFT + len(prompt), "".join(value))
+                    render_prompt()
         finally:
             curses.curs_set(0)
 
