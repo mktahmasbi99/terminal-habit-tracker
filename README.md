@@ -68,15 +68,14 @@ When a habit is created, it becomes active starting on the selected date.
 
 For active habits:
 
-- Past dates and today default to `Done`
-- Future dates default to `Pending`
+- Dates default to `Pending` until you mark them `Done` or `Missed`
 - Explicit `Done` or `Missed` choices are saved for that specific date
 
 Calendar markers:
 
-- `+` means active habits on that date are done
+- `+` means at least one active habit on that date is done
 - `!` means at least one habit is missed
-- Future pending dates are not marked as done
+- Pending dates are not marked as done
 
 ## Data Files
 

@@ -159,7 +159,6 @@ class HabitStore:
         self.connection.commit()
 
     def habits_for_day(self, day: date) -> list[HabitStatus]:
-        default_status = STATUS_DONE if day <= date.today() else STATUS_PENDING
         rows = self.connection.execute(
             """
             SELECT
@@ -174,7 +173,7 @@ class HabitStore:
             WHERE habits.start_date <= ?
             ORDER BY habits.start_date, habits.name
             """,
-            (default_status, day.isoformat(), day.isoformat()),
+            (STATUS_PENDING, day.isoformat(), day.isoformat()),
         ).fetchall()
 
         return [
@@ -483,7 +482,7 @@ class CalendarApp:
         footer_y = CALENDAR_TOP + 8
         self._draw_message(screen)
         self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Done/Missed. Keys: / commands, q quit, arrows/PgUp/PgDn, t today, a add.")
-        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar markers: + active habits all done, ! at least one missed, future days stay pending.")
+        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar markers: + at least one done, ! at least one missed, unmarked days are pending.")
 
     def _draw_message(self, screen: "curses.window", y: int = CALENDAR_TOP + 8) -> None:
         if self.message:
