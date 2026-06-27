@@ -26,6 +26,7 @@ dist/
 !.env.example
 /prompts.txt
 /todo-ideas.txt
+commit-checklist.txt
 
 # OS/editor noise
 .DS_Store

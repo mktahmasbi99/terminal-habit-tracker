@@ -432,6 +432,9 @@ class CalendarApp:
     view: str = "main"
     message: str = ""
     hitboxes: list[HitBox] = field(default_factory=list)
+    challenge_habit_id: int | None = None
+    challenge_habit_name: str = ""
+    challenge_new_habit_name: str = ""
 
     def __post_init__(self) -> None:
         current = date.today()
@@ -452,10 +455,17 @@ class CalendarApp:
         else:
             self.selection = self.selection.next_month()
         self.selected_day = None
-        self.message = ""
+        if self.view == "challenge_date_picker":
+            self.message = "Pick the challenge ending date."
+        else:
+            self.message = ""
 
     def select_day(self, day: int) -> None:
         self.selected_day = day
+        selected = self.selected_date
+        if selected is not None and self.view == "challenge_date_picker":
+            self.apply_challenge_end_date(selected)
+            return
         self.message = ""
 
     def open_manage_habits(self) -> None:
@@ -472,6 +482,23 @@ class CalendarApp:
 
     def open_complete_habits(self) -> None:
         self.view = "complete_habits"
+        self.message = ""
+
+    def open_complete_challenge_habits(self) -> None:
+        self.view = "complete_challenge_habits"
+        self.message = ""
+
+    def open_create_challenge(self) -> None:
+        self.clear_challenge_target()
+        self.view = "create_challenge"
+        self.message = ""
+
+    def open_existing_challenge_habits(self) -> None:
+        self.view = "challenge_existing_habits"
+        self.message = ""
+
+    def open_challenge_end_options(self) -> None:
+        self.view = "challenge_end_options"
         self.message = ""
 
     def open_help(self) -> None:
@@ -542,6 +569,12 @@ class CalendarApp:
     def go_back(self) -> None:
         if self.view == "manage_backups":
             self.view = "backups"
+        elif self.view == "challenge_date_picker":
+            self.view = "challenge_end_options"
+        elif self.view in {"challenge_existing_habits", "challenge_end_options"}:
+            self.view = "create_challenge"
+        elif self.view in {"complete_challenge_habits", "create_challenge"}:
+            self.view = "complete_habits"
         elif self.view in {"rename_habits", "complete_habits", "delete_habits"}:
             self.view = "manage_habits"
         elif self.view in {"help", "manage_habits", "backups"}:
@@ -647,6 +680,96 @@ class CalendarApp:
             return
         self.message = f"Completed {habit_name}. It will not appear after {today.isoformat()}."
 
+    def clear_challenge_target(self) -> None:
+        self.challenge_habit_id = None
+        self.challenge_habit_name = ""
+        self.challenge_new_habit_name = ""
+
+    def challenge_pick_target(self) -> str | None:
+        if self.challenge_new_habit_name:
+            return self.challenge_new_habit_name
+        if self.challenge_habit_id is not None:
+            return self.challenge_habit_name
+        return None
+
+    def create_new_challenge_habit(self, screen: "curses.window") -> None:
+        name = self._prompt(screen, "New challenge habit name: ")
+        if name is None or not name:
+            self.message = "Challenge creation cancelled."
+            return
+        cleaned = " ".join(name.split())
+        if not cleaned:
+            self.message = "Habit name cannot be empty."
+            return
+        self.challenge_habit_id = None
+        self.challenge_habit_name = ""
+        self.challenge_new_habit_name = cleaned
+        self.open_challenge_end_options()
+
+    def choose_existing_challenge_habit(self, habit_id: int, habit_name: str) -> None:
+        self.challenge_habit_id = habit_id
+        self.challenge_habit_name = habit_name
+        self.challenge_new_habit_name = ""
+        self.open_challenge_end_options()
+
+    def set_challenge_duration(self, screen: "curses.window") -> None:
+        if self.challenge_pick_target() is None:
+            self.message = "Choose a challenge habit first."
+            self.view = "create_challenge"
+            return
+
+        raw_duration = self._prompt(screen, "Challenge duration in days: ")
+        if raw_duration is None or not raw_duration:
+            self.message = "Challenge creation cancelled."
+            return
+        try:
+            duration_days = int(raw_duration)
+        except ValueError:
+            self.message = "Duration must be a whole number of days."
+            return
+        if duration_days < 1:
+            self.message = "Duration must be at least 1 day."
+            return
+
+        end_date = date.today() + timedelta(days=duration_days - 1)
+        self.apply_challenge_end_date(end_date)
+
+    def start_challenge_end_date_pick(self) -> None:
+        if self.challenge_pick_target() is None:
+            self.message = "Choose a challenge habit first."
+            self.view = "create_challenge"
+            return
+        today = date.today()
+        self.selection = CalendarSelection(today.year, today.month)
+        self.selected_day = today.day
+        self.view = "challenge_date_picker"
+        self.message = "Pick the challenge ending date."
+
+    def apply_challenge_end_date(self, end_date: date) -> None:
+        target = self.challenge_pick_target()
+        if target is None:
+            self.message = "Choose a challenge habit first."
+            self.view = "create_challenge"
+            return
+        if end_date < date.today():
+            self.message = "Challenge end date cannot be before today."
+            return
+
+        try:
+            if self.challenge_new_habit_name:
+                habit_id = self.store.create_habit(self.challenge_new_habit_name, date.today())
+                self.store.complete_habit(habit_id, end_date)
+            elif self.challenge_habit_id is not None:
+                self.store.complete_habit(self.challenge_habit_id, end_date)
+        except ValueError as exc:
+            self.message = str(exc)
+            return
+
+        duration_days = (end_date - date.today()).days + 1
+        self.clear_challenge_target()
+        self.view = "challenge_end_options"
+        self.message = f"Challenge for {target} runs {duration_days} days through {end_date.isoformat()}."
+
     def handle_click(self, screen: "curses.window", y: int, x: int) -> None:
         for hitbox in self.hitboxes:
             if not hitbox.contains(y, x):
@@ -669,6 +792,21 @@ class CalendarApp:
                 self.open_rename_habits()
             elif hitbox.name == "manage_challenge":
                 self.open_complete_habits()
+            elif hitbox.name == "challenge_complete":
+                self.open_complete_challenge_habits()
+            elif hitbox.name == "challenge_create":
+                self.open_create_challenge()
+            elif hitbox.name == "challenge_existing":
+                self.open_existing_challenge_habits()
+            elif hitbox.name == "challenge_new":
+                self.create_new_challenge_habit(screen)
+            elif hitbox.name == "challenge_existing_habit" and hitbox.value is not None:
+                habit_id, habit_name = hitbox.value
+                self.choose_existing_challenge_habit(int(habit_id), str(habit_name))
+            elif hitbox.name == "challenge_duration":
+                self.set_challenge_duration(screen)
+            elif hitbox.name == "challenge_end_date":
+                self.start_challenge_end_date_pick()
             elif hitbox.name == "manage_delete":
                 self.open_delete_habits()
             elif hitbox.name == "delete_habit" and hitbox.value is not None:
@@ -709,6 +847,16 @@ class CalendarApp:
             self._draw_rename_habits_page(screen)
         elif self.view == "complete_habits":
             self._draw_complete_habits_page(screen)
+        elif self.view == "complete_challenge_habits":
+            self._draw_complete_challenge_habits_page(screen)
+        elif self.view == "create_challenge":
+            self._draw_create_challenge_page(screen)
+        elif self.view == "challenge_existing_habits":
+            self._draw_existing_challenge_habits_page(screen)
+        elif self.view == "challenge_end_options":
+            self._draw_challenge_end_options_page(screen)
+        elif self.view == "challenge_date_picker":
+            self._draw_challenge_date_picker_page(screen, height, width)
         elif self.view == "backups":
             self._draw_backups_page(screen)
         elif self.view == "manage_backups":
@@ -943,6 +1091,20 @@ class CalendarApp:
         self._addstr(screen, 1, DETAIL_LEFT, "Challenge Mode", self._color(1) | curses.A_BOLD)
         self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
 
+        complete_label = "Complete Habit"
+        create_label = "Create Challenge"
+        self._addstr(screen, 4, CALENDAR_LEFT, complete_label, curses.A_BOLD)
+        self._addstr(screen, 6, CALENDAR_LEFT, create_label, curses.A_BOLD)
+        self.hitboxes.append(HitBox("challenge_complete", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(complete_label) - 1))
+        self.hitboxes.append(HitBox("challenge_create", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(create_label) - 1))
+        self._draw_message(screen, 16)
+
+    def _draw_complete_challenge_habits_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Complete Habit", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
         habits = self.store.list_habits()
         if not habits:
             self._addstr(screen, 4, CALENDAR_LEFT, "No habits to complete.")
@@ -966,6 +1128,109 @@ class CalendarApp:
         if len(habits) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
         self._draw_message(screen, 16)
+
+    def _draw_create_challenge_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Create Challenge", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        existing_label = "Existing Habit"
+        new_label = "New Habit"
+        self._addstr(screen, 4, CALENDAR_LEFT, existing_label, curses.A_BOLD)
+        self._addstr(screen, 6, CALENDAR_LEFT, new_label, curses.A_BOLD)
+        self.hitboxes.append(HitBox("challenge_existing", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(existing_label) - 1))
+        self.hitboxes.append(HitBox("challenge_new", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(new_label) - 1))
+        self._draw_message(screen, 16)
+
+    def _draw_existing_challenge_habits_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Existing Habit", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        habits = self.store.list_active_habits()
+        if not habits:
+            self._addstr(screen, 4, CALENDAR_LEFT, "No active habits available.")
+            self._draw_message(screen)
+            return
+
+        self._addstr(screen, 3, CALENDAR_LEFT, "Choose an active habit for this challenge.", curses.A_BOLD)
+        for index, habit in enumerate(habits[:9]):
+            y = 5 + index
+            habit_label = f"{self._truncate(habit.name, 28)} ({habit.start_date.isoformat()})"
+            choose_label = "Choose"
+            choose_x = DETAIL_LEFT + 20
+            self._addstr(screen, y, CALENDAR_LEFT, habit_label)
+            self._addstr(screen, y, choose_x, choose_label, curses.A_BOLD)
+            self.hitboxes.append(
+                HitBox("challenge_existing_habit", y, choose_x, choose_x + len(choose_label) - 1, (habit.habit_id, habit.name))
+            )
+
+        if len(habits) > 9:
+            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} active habits.")
+        self._draw_message(screen, 16)
+
+    def _draw_challenge_end_options_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Challenge End", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        target = self.challenge_pick_target() or "Selected habit"
+        self._addstr(screen, 3, CALENDAR_LEFT, self._truncate(target, 42), curses.A_BOLD)
+        duration_label = "Set Duration"
+        end_date_label = "Pick Ending Date"
+        self._addstr(screen, 5, CALENDAR_LEFT, duration_label, curses.A_BOLD)
+        self._addstr(screen, 7, CALENDAR_LEFT, end_date_label, curses.A_BOLD)
+        self.hitboxes.append(HitBox("challenge_duration", 5, CALENDAR_LEFT, CALENDAR_LEFT + len(duration_label) - 1))
+        self.hitboxes.append(HitBox("challenge_end_date", 7, CALENDAR_LEFT, CALENDAR_LEFT + len(end_date_label) - 1))
+        self._draw_message(screen, 16)
+
+    def _draw_challenge_date_picker_page(self, screen: "curses.window", height: int, width: int) -> None:
+        today = date.today()
+        target = self.challenge_pick_target() or "Selected habit"
+        calendar_width = 7 * CELL_WIDTH - 1
+        left = max(0, (width - calendar_width) // 2)
+        top = max(4, (height - 10) // 2)
+        title = f"{calendar.month_name[self.selection.month]} {self.selection.year}"
+        title_x = max(0, (width - len(title)) // 2)
+        previous_label = "< Prev"
+        next_label = "Next >"
+        previous_x = max(0, title_x - len(previous_label) - 4)
+        next_x = min(max(0, width - len(next_label) - 1), title_x + len(title) + 4)
+
+        self._addstr(screen, 1, max(0, (width - 21) // 2), "Pick Challenge End", self._color(1) | curses.A_BOLD)
+        self._addstr(screen, 3, max(0, (width - min(len(target), 42)) // 2), self._truncate(target, 42), curses.A_BOLD)
+        self._addstr(screen, top - 3, previous_x, previous_label, curses.A_BOLD)
+        self._addstr(screen, top - 3, title_x, title, self._color(1) | curses.A_BOLD)
+        self._addstr(screen, top - 3, next_x, next_label, curses.A_BOLD)
+        self.hitboxes.append(HitBox("previous", top - 3, previous_x, previous_x + len(previous_label) - 1))
+        self.hitboxes.append(HitBox("next", top - 3, next_x, next_x + len(next_label) - 1))
+
+        self._addstr(screen, top - 1, left, WEEKDAY_HEADER, curses.A_BOLD)
+        for row_index, week in enumerate(calendar.monthcalendar(self.selection.year, self.selection.month)):
+            y = top + row_index
+            for col_index, day in enumerate(week):
+                x = left + col_index * CELL_WIDTH
+                if day == 0:
+                    self._addstr(screen, y, x, "  ")
+                    continue
+
+                style = curses.A_NORMAL
+                if day == self.selected_day:
+                    style |= self._color(2) | curses.A_BOLD
+                if (
+                    day == today.day
+                    and self.selection.month == today.month
+                    and self.selection.year == today.year
+                ):
+                    style |= self._color(3) | curses.A_BOLD
+
+                self._addstr(screen, y, x, f"{day:2}", style)
+                self.hitboxes.append(HitBox("day", y, x, x + 1, day))
+
+        self._draw_message(screen, min(height - 2, top + 8))
 
     def _draw_footer(self, screen: "curses.window") -> None:
         footer_y = CALENDAR_TOP + 8

@@ -85,6 +85,9 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Use `/help` to list hidden commands
 - Use `/backup` to open backup tools, then choose `Create Backup` or `Manage Backups`
 - Use `/managehabit` to open habit management, then choose `Rename`, `Challenge Mode`, or `Delete [DANGER]`
+- In `Challenge Mode`, choose `Complete Habit` to archive a habit or `Create Challenge` to set an end date for a challenge
+- Create a challenge from an active existing habit or a new habit, then choose `Set Duration` or `Pick Ending Date`
+- `Pick Ending Date` opens a centered calendar picker and confirms both the challenge duration and end date
 - Type `DELETE` when prompted to confirm an irreversible habit deletion
 - Confirm Challenge Mode completion with `Y` or cancel with `N`
 - Use `/quit` to quit from the command prompt
@@ -100,11 +103,13 @@ When a habit is created, it becomes active starting on the selected date.
 
 If the selected start date is before today, the app automatically marks every day from the start date through yesterday as `Done`. Today remains `Pending`.
 
-Completed habits:
+Completed habits and challenges:
 
 - Completing a habit archives it as of today
-- The habit remains visible on historical dates from its active range, including the completion date
-- Dates after completion do not show the habit as active or pending
+- Creating a challenge sets an ending date for an active habit or a newly created habit
+- Challenge duration is inclusive: a 90-day challenge created today ends 89 days from today
+- The habit remains visible on historical dates from its active range, including the completion or challenge end date
+- Dates after completion or challenge end do not show the habit as active or pending
 - Saved history is preserved for future export or charting
 
 For active habits:

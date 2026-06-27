@@ -9,11 +9,15 @@ All notable changes to this project will be documented in this file.
 - Completed habits remain visible through their completion date and disappear from future daily lists.
 - Added database support for nullable habit completion dates while preserving historical logs.
 - Added a `/managehabit` page with `Rename`, `Challenge Mode`, and `Delete [DANGER]` actions.
+- Added `Complete Habit` and `Create Challenge` options under `Challenge Mode`.
+- Added challenge creation from an active existing habit or a new habit with either a duration or calendar-picked ending date.
+- Added a dedicated centered calendar picker for challenge ending dates.
 
 ### Changed
 - Documented completion/archive and habit management behavior in the README.
 - Replaced direct `/delhabit`, `/renamehabit`, and `/completehabit` command flows with the `/managehabit` menu.
 - Changed habit completion confirmation from typing `COMPLETE` to a Y/N prompt.
+- Changed challenge confirmation messages to include both duration and ending date.
 - Marked the completed completion/archive TODO as `#DONE`.
 
 ## Initial development
