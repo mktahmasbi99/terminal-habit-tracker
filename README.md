@@ -2,6 +2,8 @@
 
 A small terminal habit tracker with a navigable monthly calendar. It lets you add daily habits from a selected start date, mark each habit as pending, done, or missed for a day, and persist the data locally in SQLite.
 
+**NOTE: THIS PROJECT IS VIBE CODED AND MAINLY EXISTS TO SCRATCH A PERSONAL ITCH.**
+
 ## Features
 
 - Interactive monthly calendar in the terminal
