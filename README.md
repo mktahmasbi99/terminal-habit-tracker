@@ -9,6 +9,7 @@ A small terminal habit tracker with a navigable monthly calendar. It lets you ad
 - Interactive monthly calendar in the terminal
 - Mouse support for selecting dates and controls
 - Daily habit creation from any selected date
+- Habit completion/archiving that stops future tracking without deleting history
 - Per-day habit status tracking: `Pending`, `Done`, or `Missed`
 - Calendar markers for days with completed or missed habits
 - Local SQLite persistence
@@ -86,6 +87,7 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Use `/delhabit` to open habit deletion
 - Type `DELETE` when prompted to confirm an irreversible habit deletion
 - Use `/renamehabit` to rename an existing habit
+- Use `/completehabit` to mark an active habit completed as of today
 - Use `/quit` to quit from the command prompt
 - Press left/right arrows or Page Up/Page Down to move between months
 - Press `t` to jump to today
@@ -98,6 +100,13 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 When a habit is created, it becomes active starting on the selected date.
 
 If the selected start date is before today, the app automatically marks every day from the start date through yesterday as `Done`. Today remains `Pending`.
+
+Completed habits:
+
+- Completing a habit archives it as of today
+- The habit remains visible on historical dates from its active range, including the completion date
+- Dates after completion do not show the habit as active or pending
+- Saved history is preserved for future export or charting
 
 For active habits:
 

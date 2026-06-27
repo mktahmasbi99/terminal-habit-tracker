@@ -31,6 +31,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/backup", "Open backup tools."),
     ("/delhabit", "Open habit deletion. Deletion requires typing DELETE."),
     ("/renamehabit", "Rename an existing habit."),
+    ("/completehabit", "Mark a habit completed as of today."),
     ("/quit", "Quit the app."),
 )
 
@@ -63,6 +64,7 @@ class Habit:
     habit_id: int
     name: str
     start_date: date
+    completed_at: date | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,7 @@ class HabitStatus:
     name: str
     start_date: date
     status: str
+    completed_at: date | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +126,7 @@ class HabitStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 start_date TEXT NOT NULL,
+                completed_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -136,6 +140,9 @@ class HabitStore:
             );
             """
         )
+        habit_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(habits)")}
+        if "completed_at" not in habit_columns:
+            self.connection.execute("ALTER TABLE habits ADD COLUMN completed_at TEXT")
         self.connection.commit()
 
     def create_habit(self, name: str, start_date: date) -> int:
@@ -169,6 +176,8 @@ class HabitStore:
     def set_status(self, habit_id: int, day: date, status: str) -> None:
         if status not in {STATUS_DONE, STATUS_MISSED, STATUS_PENDING}:
             raise ValueError(f"Unknown habit status: {status}")
+        if not self.habit_active_on(habit_id, day):
+            raise ValueError("Habit is not active on the selected date.")
 
         if status == STATUS_PENDING:
             self.connection.execute(
@@ -192,7 +201,7 @@ class HabitStore:
     def list_habits(self) -> list[Habit]:
         rows = self.connection.execute(
             """
-            SELECT id, name, start_date
+            SELECT id, name, start_date, completed_at
             FROM habits
             ORDER BY start_date, name
             """
@@ -202,9 +211,50 @@ class HabitStore:
                 habit_id=int(row["id"]),
                 name=str(row["name"]),
                 start_date=date.fromisoformat(str(row["start_date"])),
+                completed_at=(
+                    date.fromisoformat(str(row["completed_at"]))
+                    if row["completed_at"] is not None
+                    else None
+                ),
             )
             for row in rows
         ]
+
+    def list_active_habits(self) -> list[Habit]:
+        return [habit for habit in self.list_habits() if habit.completed_at is None]
+
+    def habit_active_on(self, habit_id: int, day: date) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM habits
+            WHERE id = ?
+                AND start_date <= ?
+                AND (completed_at IS NULL OR completed_at >= ?)
+            """,
+            (habit_id, day.isoformat(), day.isoformat()),
+        ).fetchone()
+        return row is not None
+
+    def complete_habit(self, habit_id: int, completion_date: date) -> None:
+        row = self.connection.execute(
+            "SELECT start_date, completed_at FROM habits WHERE id = ?",
+            (habit_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Habit does not exist.")
+        if row["completed_at"] is not None:
+            raise ValueError("Habit is already completed.")
+
+        start_date = date.fromisoformat(str(row["start_date"]))
+        if completion_date < start_date:
+            raise ValueError("Completion date cannot be before the habit start date.")
+
+        self.connection.execute(
+            "UPDATE habits SET completed_at = ? WHERE id = ?",
+            (completion_date.isoformat(), habit_id),
+        )
+        self.connection.commit()
 
     def delete_habit(self, habit_id: int) -> None:
         self.connection.execute("DELETE FROM habits WHERE id = ?", (habit_id,))
@@ -228,15 +278,17 @@ class HabitStore:
                 habits.id,
                 habits.name,
                 habits.start_date,
+                habits.completed_at,
                 COALESCE(habit_logs.status, ?) AS status
             FROM habits
             LEFT JOIN habit_logs
                 ON habit_logs.habit_id = habits.id
                 AND habit_logs.log_date = ?
             WHERE habits.start_date <= ?
+                AND (habits.completed_at IS NULL OR habits.completed_at >= ?)
             ORDER BY habits.start_date, habits.name
             """,
-            (STATUS_PENDING, day.isoformat(), day.isoformat()),
+            (STATUS_PENDING, day.isoformat(), day.isoformat(), day.isoformat()),
         ).fetchall()
 
         return [
@@ -245,6 +297,11 @@ class HabitStore:
                 name=str(row["name"]),
                 start_date=date.fromisoformat(str(row["start_date"])),
                 status=str(row["status"]),
+                completed_at=(
+                    date.fromisoformat(str(row["completed_at"]))
+                    if row["completed_at"] is not None
+                    else None
+                ),
             )
             for row in rows
         ]
@@ -411,6 +468,10 @@ class CalendarApp:
         self.view = "rename_habits"
         self.message = ""
 
+    def open_complete_habits(self) -> None:
+        self.view = "complete_habits"
+        self.message = ""
+
     def open_help(self) -> None:
         self.view = "help"
         self.message = ""
@@ -479,7 +540,7 @@ class CalendarApp:
     def go_back(self) -> None:
         if self.view == "manage_backups":
             self.view = "backups"
-        elif self.view in {"help", "manage_habits", "rename_habits", "backups"}:
+        elif self.view in {"help", "manage_habits", "rename_habits", "complete_habits", "backups"}:
             self.view = "main"
         self.message = ""
 
@@ -503,6 +564,9 @@ class CalendarApp:
             return True
         if normalized == "/renamehabit":
             self.open_rename_habits()
+            return True
+        if normalized == "/completehabit":
+            self.open_complete_habits()
             return True
         if normalized == "/quit":
             return False
@@ -536,7 +600,11 @@ class CalendarApp:
         if selected is None:
             self.message = "Select a day first."
             return
-        self.store.set_status(habit_id, selected, status)
+        try:
+            self.store.set_status(habit_id, selected, status)
+        except ValueError as exc:
+            self.message = str(exc)
+            return
         self.message = f"Marked habit as {status_label(status)} on {selected.isoformat()}."
 
     def delete_habit(self, screen: "curses.window", habit_id: int, habit_name: str) -> None:
@@ -564,6 +632,23 @@ class CalendarApp:
             return
         self.message = f"Renamed '{habit_name}' to '{new_name}'."
 
+    def complete_habit(self, screen: "curses.window", habit_id: int, habit_name: str) -> None:
+        today = date.today()
+        confirmation = self._prompt(
+            screen,
+            f"Complete {self._truncate(habit_name, 18)} as of {today.isoformat()}? Type COMPLETE: ",
+        )
+        if confirmation != "COMPLETE":
+            self.message = "Habit completion cancelled."
+            return
+
+        try:
+            self.store.complete_habit(habit_id, today)
+        except ValueError as exc:
+            self.message = str(exc)
+            return
+        self.message = f"Completed {habit_name}. It will not appear after {today.isoformat()}."
+
     def handle_click(self, screen: "curses.window", y: int, x: int) -> None:
         for hitbox in self.hitboxes:
             if not hitbox.contains(y, x):
@@ -588,6 +673,9 @@ class CalendarApp:
             elif hitbox.name == "rename_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
                 self.rename_habit(screen, int(habit_id), str(habit_name))
+            elif hitbox.name == "complete_habit" and hitbox.value is not None:
+                habit_id, habit_name = hitbox.value
+                self.complete_habit(screen, int(habit_id), str(habit_name))
             elif hitbox.name == "day" and hitbox.value is not None:
                 self.select_day(int(hitbox.value))
             elif hitbox.name == "add_habit":
@@ -613,6 +701,8 @@ class CalendarApp:
             self._draw_manage_habits_page(screen)
         elif self.view == "rename_habits":
             self._draw_rename_habits_page(screen)
+        elif self.view == "complete_habits":
+            self._draw_complete_habits_page(screen)
         elif self.view == "backups":
             self._draw_backups_page(screen)
         elif self.view == "manage_backups":
@@ -822,6 +912,36 @@ class CalendarApp:
 
         if len(habits) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
+        self._draw_message(screen, 16)
+
+    def _draw_complete_habits_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Complete Habits", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        habits = self.store.list_active_habits()
+        if not habits:
+            self._addstr(screen, 4, CALENDAR_LEFT, "No active habits to complete.")
+            self._draw_message(screen)
+            return
+
+        self._addstr(screen, 3, CALENDAR_LEFT, "Complete Habit", curses.A_BOLD)
+        self._addstr(screen, 4, CALENDAR_LEFT, "Completion archives the habit after today and keeps its history.")
+
+        for index, habit in enumerate(habits[:9]):
+            y = 6 + index
+            habit_label = f"{self._truncate(habit.name, 28)} ({habit.start_date.isoformat()})"
+            complete_label = "Complete"
+            complete_x = DETAIL_LEFT + 20
+            self._addstr(screen, y, CALENDAR_LEFT, habit_label)
+            self._addstr(screen, y, complete_x, complete_label, curses.A_BOLD)
+            self.hitboxes.append(
+                HitBox("complete_habit", y, complete_x, complete_x + len(complete_label) - 1, (habit.habit_id, habit.name))
+            )
+
+        if len(habits) > 9:
+            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} active habits.")
         self._draw_message(screen, 16)
 
     def _draw_footer(self, screen: "curses.window") -> None:
