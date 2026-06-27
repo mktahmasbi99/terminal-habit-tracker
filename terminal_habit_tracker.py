@@ -29,9 +29,7 @@ MAX_AUTOMATIC_BACKUPS = 5
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "Show this command list."),
     ("/backup", "Open backup tools."),
-    ("/delhabit", "Open habit deletion. Deletion requires typing DELETE."),
-    ("/renamehabit", "Rename an existing habit."),
-    ("/completehabit", "Mark a habit completed as of today."),
+    ("/managehabit", "Open habit management."),
     ("/quit", "Quit the app."),
 )
 
@@ -464,6 +462,10 @@ class CalendarApp:
         self.view = "manage_habits"
         self.message = ""
 
+    def open_delete_habits(self) -> None:
+        self.view = "delete_habits"
+        self.message = ""
+
     def open_rename_habits(self) -> None:
         self.view = "rename_habits"
         self.message = ""
@@ -540,7 +542,9 @@ class CalendarApp:
     def go_back(self) -> None:
         if self.view == "manage_backups":
             self.view = "backups"
-        elif self.view in {"help", "manage_habits", "rename_habits", "complete_habits", "backups"}:
+        elif self.view in {"rename_habits", "complete_habits", "delete_habits"}:
+            self.view = "manage_habits"
+        elif self.view in {"help", "manage_habits", "backups"}:
             self.view = "main"
         self.message = ""
 
@@ -559,14 +563,8 @@ class CalendarApp:
         if normalized == "/backup":
             self.open_backups()
             return True
-        if normalized == "/delhabit":
+        if normalized == "/managehabit":
             self.open_manage_habits()
-            return True
-        if normalized == "/renamehabit":
-            self.open_rename_habits()
-            return True
-        if normalized == "/completehabit":
-            self.open_complete_habits()
             return True
         if normalized == "/quit":
             return False
@@ -636,9 +634,9 @@ class CalendarApp:
         today = date.today()
         confirmation = self._prompt(
             screen,
-            f"Complete {self._truncate(habit_name, 18)} as of {today.isoformat()}? Type COMPLETE: ",
+            f"Complete {self._truncate(habit_name, 18)} as of {today.isoformat()}? Y/N: ",
         )
-        if confirmation != "COMPLETE":
+        if confirmation is None or confirmation.strip().lower() not in {"y", "yes"}:
             self.message = "Habit completion cancelled."
             return
 
@@ -667,6 +665,12 @@ class CalendarApp:
                 self.delete_backup(screen, Path(str(hitbox.value)))
             elif hitbox.name == "restore_backup" and hitbox.value is not None:
                 self.restore_backup(screen, Path(str(hitbox.value)))
+            elif hitbox.name == "manage_rename":
+                self.open_rename_habits()
+            elif hitbox.name == "manage_challenge":
+                self.open_complete_habits()
+            elif hitbox.name == "manage_delete":
+                self.open_delete_habits()
             elif hitbox.name == "delete_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
                 self.delete_habit(screen, int(habit_id), str(habit_name))
@@ -699,6 +703,8 @@ class CalendarApp:
             self._draw_help_page(screen)
         elif self.view == "manage_habits":
             self._draw_manage_habits_page(screen)
+        elif self.view == "delete_habits":
+            self._draw_delete_habits_page(screen)
         elif self.view == "rename_habits":
             self._draw_rename_habits_page(screen)
         elif self.view == "complete_habits":
@@ -864,9 +870,26 @@ class CalendarApp:
         self._addstr(screen, 1, DETAIL_LEFT, "Manage Habits", self._color(1) | curses.A_BOLD)
         self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
 
+        rename_label = "Rename"
+        challenge_label = "Challenge Mode"
+        delete_label = "Delete [DANGER]"
+        self._addstr(screen, 4, CALENDAR_LEFT, rename_label, curses.A_BOLD)
+        self._addstr(screen, 6, CALENDAR_LEFT, challenge_label, curses.A_BOLD)
+        self._addstr(screen, 8, CALENDAR_LEFT, delete_label, curses.A_BOLD)
+        self.hitboxes.append(HitBox("manage_rename", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(rename_label) - 1))
+        self.hitboxes.append(HitBox("manage_challenge", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(challenge_label) - 1))
+        self.hitboxes.append(HitBox("manage_delete", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(delete_label) - 1))
+        self._draw_message(screen, 16)
+
+    def _draw_delete_habits_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Delete Habits", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
         habits = self.store.list_habits()
         if not habits:
-            self._addstr(screen, 4, CALENDAR_LEFT, "No habits to manage.")
+            self._addstr(screen, 4, CALENDAR_LEFT, "No habits to delete.")
             self._draw_message(screen)
             return
 
@@ -917,12 +940,12 @@ class CalendarApp:
     def _draw_complete_habits_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
         self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
-        self._addstr(screen, 1, DETAIL_LEFT, "Complete Habits", self._color(1) | curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Challenge Mode", self._color(1) | curses.A_BOLD)
         self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
 
-        habits = self.store.list_active_habits()
+        habits = self.store.list_habits()
         if not habits:
-            self._addstr(screen, 4, CALENDAR_LEFT, "No active habits to complete.")
+            self._addstr(screen, 4, CALENDAR_LEFT, "No habits to complete.")
             self._draw_message(screen)
             return
 
@@ -941,7 +964,7 @@ class CalendarApp:
             )
 
         if len(habits) > 9:
-            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} active habits.")
+            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
         self._draw_message(screen, 16)
 
     def _draw_footer(self, screen: "curses.window") -> None:

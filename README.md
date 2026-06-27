@@ -84,10 +84,9 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Press `h` to open help from the main screen
 - Use `/help` to list hidden commands
 - Use `/backup` to open backup tools, then choose `Create Backup` or `Manage Backups`
-- Use `/delhabit` to open habit deletion
+- Use `/managehabit` to open habit management, then choose `Rename`, `Challenge Mode`, or `Delete [DANGER]`
 - Type `DELETE` when prompted to confirm an irreversible habit deletion
-- Use `/renamehabit` to rename an existing habit
-- Use `/completehabit` to mark an active habit completed as of today
+- Confirm Challenge Mode completion with `Y` or cancel with `N`
 - Use `/quit` to quit from the command prompt
 - Press left/right arrows or Page Up/Page Down to move between months
 - Press `t` to jump to today

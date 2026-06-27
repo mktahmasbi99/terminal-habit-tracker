@@ -5,12 +5,15 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Added
-- Added habit completion/archiving through `/completehabit`.
+- Added habit completion/archiving behavior.
 - Completed habits remain visible through their completion date and disappear from future daily lists.
 - Added database support for nullable habit completion dates while preserving historical logs.
+- Added a `/managehabit` page with `Rename`, `Challenge Mode`, and `Delete [DANGER]` actions.
 
 ### Changed
-- Documented completion/archive behavior in the README.
+- Documented completion/archive and habit management behavior in the README.
+- Replaced direct `/delhabit`, `/renamehabit`, and `/completehabit` command flows with the `/managehabit` menu.
+- Changed habit completion confirmation from typing `COMPLETE` to a Y/N prompt.
 - Marked the completed completion/archive TODO as `#DONE`.
 
 ## Initial development
