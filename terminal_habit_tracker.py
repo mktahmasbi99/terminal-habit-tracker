@@ -9,7 +9,7 @@ import curses
 import sqlite3
 import shutil
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -85,6 +85,15 @@ class HitBox:
         return self.y == y and self.x1 <= x <= self.x2
 
 
+def date_range(start: date, stop: date) -> list[date]:
+    days: list[date] = []
+    current = start
+    while current < stop:
+        days.append(current)
+        current += timedelta(days=1)
+    return days
+
+
 class HabitStore:
     """SQLite persistence for daily habits and explicit daily status edits."""
 
@@ -134,12 +143,28 @@ class HabitStore:
         if not cleaned:
             raise ValueError("Habit name cannot be empty.")
 
-        cursor = self.connection.execute(
-            "INSERT INTO habits (name, start_date) VALUES (?, ?)",
-            (cleaned, start_date.isoformat()),
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
+        today = date.today()
+        with self.connection:
+            cursor = self.connection.execute(
+                "INSERT INTO habits (name, start_date) VALUES (?, ?)",
+                (cleaned, start_date.isoformat()),
+            )
+            habit_id = int(cursor.lastrowid)
+
+            if start_date < today:
+                past_days = [
+                    (habit_id, current_day.isoformat(), STATUS_DONE)
+                    for current_day in date_range(start_date, today)
+                ]
+                self.connection.executemany(
+                    """
+                    INSERT INTO habit_logs (habit_id, log_date, status)
+                    VALUES (?, ?, ?)
+                    """,
+                    past_days,
+                )
+
+        return habit_id
 
     def set_status(self, habit_id: int, day: date, status: str) -> None:
         if status not in {STATUS_DONE, STATUS_MISSED, STATUS_PENDING}:

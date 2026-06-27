@@ -97,9 +97,11 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 
 When a habit is created, it becomes active starting on the selected date.
 
+If the selected start date is before today, the app automatically marks every day from the start date through yesterday as `Done`. Today remains `Pending`.
+
 For active habits:
 
-- Dates default to `Pending` until you mark them `Done` or `Missed`
+- Dates without a saved status default to `Pending`
 - Explicit `Done` or `Missed` choices are saved for that specific date
 - Choosing `Pending` clears the saved status for that habit and date
 
