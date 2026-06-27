@@ -10,6 +10,7 @@ A small terminal habit tracker with a navigable monthly calendar. It lets you ad
 - Per-day habit status tracking: `Pending`, `Done`, or `Missed`
 - Calendar markers for days with completed or missed habits
 - Local SQLite persistence
+- Automatic daily SQLite backups plus on-demand backup and restore commands
 - Plain text month view for quick output or scripting
 
 ## Requirements
@@ -45,6 +46,30 @@ Print a non-interactive calendar view:
 python3 terminal_habit_tracker.py --plain
 ```
 
+Create an on-demand timestamped backup beside the database:
+
+```bash
+python3 terminal_habit_tracker.py --backup
+```
+
+Create an on-demand backup at a specific path:
+
+```bash
+python3 terminal_habit_tracker.py --backup /path/to/habits-backup.sqlite3
+```
+
+Restore from a backup. If the target database already exists, type `RESTORE` when prompted:
+
+```bash
+python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3
+```
+
+Restore without an interactive confirmation prompt:
+
+```bash
+python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --force
+```
+
 ## Controls
 
 - Click a date to select it
@@ -55,6 +80,7 @@ python3 terminal_habit_tracker.py --plain
 - Press `/` to enter a command; matching commands are suggested as you type, and `Tab` completes a single match
 - Press `h` to open help from the main screen
 - Use `/help` to list hidden commands
+- Use `/backup` to open backup tools, then choose `Create Backup` or `Manage Backups`
 - Use `/delhabit` to open habit deletion
 - Type `DELETE` when prompted to confirm an irreversible habit deletion
 - Use `/renamehabit` to rename an existing habit
@@ -89,4 +115,21 @@ By default, the app stores data in:
 habit_tracker.sqlite3
 ```
 
-The local database and prompt scratch file are ignored by git through `.gitignore`.
+Backups created without an explicit path are written to a `backups/` directory beside the active database. For the default database, backup files look like:
+
+```text
+backups/o-habit_tracker-20260627-143000.sqlite3
+backups/a-habit_tracker-20260627.sqlite3
+```
+
+When using `--db /path/to/habits.sqlite3`, the default backup directory is `/path/to/backups/`. The in-app `/backup` command follows the same rule.
+
+Automatic backups are created once per calendar day when the interactive app starts. The app keeps the latest 5 automatic backups and deletes older files matching the `a-` backup naming pattern.
+
+On-demand backups are created by `--backup` or by choosing `Create Backup` from the `/backup` page. They use the `o-` backup naming pattern and are kept until you delete them manually.
+
+The `/backup` page includes `Manage Backups`, where you can restore or delete backup files from the active database backup directory. The page legend explains that `a` means automatic and `o` means on-demand. Deleting a backup requires typing `DELETE`; restoring a backup requires typing `RESTORE`.
+
+Restore replaces the active database selected by `--db`, or `habit_tracker.sqlite3` when `--db` is not provided. Existing databases require typing `RESTORE` unless `--force` is used.
+
+The local database, backup directory, and prompt scratch file are ignored by git through `.gitignore`.

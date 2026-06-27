@@ -35,3 +35,4 @@ Thumbs.db
 # Local app data
 habit_tracker.sqlite3
 habit_tracker.sqlite3-*
+backups/

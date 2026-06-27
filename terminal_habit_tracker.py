@@ -7,8 +7,9 @@ import argparse
 import calendar
 import curses
 import sqlite3
+import shutil
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -22,8 +23,12 @@ STATUS_DONE = "done"
 STATUS_MISSED = "missed"
 STATUS_PENDING = "pending"
 DEFAULT_DB_PATH = Path("habit_tracker.sqlite3")
+ON_DEMAND_BACKUP_PREFIX = "o"
+AUTOMATIC_BACKUP_PREFIX = "a"
+MAX_AUTOMATIC_BACKUPS = 5
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "Show this command list."),
+    ("/backup", "Open backup tools."),
     ("/delhabit", "Open habit deletion. Deletion requires typing DELETE."),
     ("/renamehabit", "Rename an existing habit."),
     ("/quit", "Quit the app."),
@@ -91,6 +96,14 @@ class HabitStore:
 
     def close(self) -> None:
         self.connection.close()
+
+    def backup(self, destination: Path | str | None = None) -> Path:
+        backup_path = backup_destination(self.db_path, destination)
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with sqlite3.connect(backup_path) as backup_connection:
+            self.connection.backup(backup_connection)
+        return backup_path
 
     def initialize(self) -> None:
         self.connection.executescript(
@@ -223,6 +236,103 @@ class HabitStore:
         return summary
 
 
+def default_backup_directory(db_path: Path | str) -> Path:
+    resolved = Path(db_path)
+    return resolved.parent / "backups"
+
+
+def backup_destination(db_path: Path | str, destination: Path | str | None = None) -> Path:
+    if destination is not None:
+        return Path(destination)
+
+    source = Path(db_path)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_dir = default_backup_directory(source)
+    candidate = backup_dir / f"{ON_DEMAND_BACKUP_PREFIX}-{source.stem}-{timestamp}{source.suffix}"
+    if not candidate.exists():
+        return candidate
+
+    for counter in range(2, 1000):
+        candidate = backup_dir / f"{ON_DEMAND_BACKUP_PREFIX}-{source.stem}-{timestamp}-{counter}{source.suffix}"
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError("Could not find an available backup filename.")
+
+
+def automatic_backup_destination(db_path: Path | str, day: date | None = None) -> Path:
+    source = Path(db_path)
+    backup_day = day if day is not None else date.today()
+    backup_dir = default_backup_directory(source)
+    return backup_dir / f"{AUTOMATIC_BACKUP_PREFIX}-{source.stem}-{backup_day:%Y%m%d}{source.suffix}"
+
+
+def automatic_backup_paths(db_path: Path | str) -> list[Path]:
+    source = Path(db_path)
+    backup_dir = default_backup_directory(source)
+    prefix = f"{AUTOMATIC_BACKUP_PREFIX}-{source.stem}-"
+
+    if not backup_dir.exists():
+        return []
+
+    return sorted(
+        path
+        for path in backup_dir.iterdir()
+        if path.is_file() and path.name.startswith(prefix) and path.suffix == source.suffix
+    )
+
+
+def prune_automatic_backups(db_path: Path | str, keep: int = MAX_AUTOMATIC_BACKUPS) -> None:
+    backups = automatic_backup_paths(db_path)
+    for backup_path in backups[: max(0, len(backups) - keep)]:
+        backup_path.unlink()
+
+
+def create_automatic_backup(store: "HabitStore", keep: int = MAX_AUTOMATIC_BACKUPS) -> Path | None:
+    backup_path = automatic_backup_destination(store.db_path)
+    if backup_path.exists():
+        prune_automatic_backups(store.db_path, keep)
+        return None
+
+    created_path = store.backup(backup_path)
+    prune_automatic_backups(store.db_path, keep)
+    return created_path
+
+
+def list_backup_files(db_path: Path | str) -> list[Path]:
+    backup_dir = default_backup_directory(db_path)
+    if not backup_dir.exists():
+        return []
+
+    return sorted(
+        (path for path in backup_dir.iterdir() if path.is_file()),
+        key=lambda path: (path.stat().st_mtime, path.name),
+        reverse=True,
+    )
+
+
+def is_backup_file_for_database(db_path: Path | str, backup_path: Path | str) -> bool:
+    backup_dir = default_backup_directory(db_path).resolve()
+    candidate = Path(backup_path).resolve()
+    return candidate.parent == backup_dir and candidate.is_file()
+
+
+def restore_database(db_path: Path | str, backup_path: Path | str, force: bool = False) -> None:
+    destination = Path(db_path)
+    source = Path(backup_path)
+
+    if not source.exists():
+        raise FileNotFoundError(f"Backup file does not exist: {source}")
+    if not source.is_file():
+        raise ValueError(f"Backup path is not a file: {source}")
+    if destination.exists() and not force:
+        raise FileExistsError(
+            f"Database already exists at {destination}. Re-run with --force to restore over it."
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
 def status_label(status: str) -> str:
     if status == STATUS_DONE:
         return "Done"
@@ -280,8 +390,71 @@ class CalendarApp:
         self.view = "help"
         self.message = ""
 
+    def open_backups(self) -> None:
+        self.view = "backups"
+        self.message = ""
+
+    def open_manage_backups(self) -> None:
+        self.view = "manage_backups"
+        self.message = ""
+
+    def create_backup(self) -> None:
+        backup_path = self.store.backup()
+        self.message = f"Backup saved to {backup_path}"
+
+    def delete_backup(self, screen: "curses.window", backup_path: Path) -> None:
+        if not is_backup_file_for_database(self.store.db_path, backup_path):
+            self.message = "Backup file is not in this database backup directory."
+            return
+
+        confirmation = self._prompt(
+            screen,
+            f"Irreversible. Type DELETE to delete '{self._truncate(backup_path.name, 24)}': ",
+        )
+        if confirmation != "DELETE":
+            self.message = "Backup deletion cancelled."
+            return
+
+        try:
+            backup_path.unlink()
+        except OSError as exc:
+            self.message = f"Backup deletion failed: {exc}"
+            return
+        self.message = f"Deleted backup '{backup_path.name}'."
+
+    def restore_backup(self, screen: "curses.window", backup_path: Path) -> None:
+        if not is_backup_file_for_database(self.store.db_path, backup_path):
+            self.message = "Backup file is not in this database backup directory."
+            return
+
+        confirmation = self._prompt(
+            screen,
+            f"Type RESTORE to restore '{self._truncate(backup_path.name, 24)}': ",
+        )
+        if confirmation != "RESTORE":
+            self.message = "Backup restore cancelled."
+            return
+
+        db_path = self.store.db_path
+        try:
+            self.store.close()
+            restore_database(db_path, backup_path, force=True)
+            self.store = HabitStore(db_path)
+        except Exception as exc:
+            try:
+                self.store = HabitStore(db_path)
+            except Exception:
+                pass
+            self.message = f"Backup restore failed: {exc}"
+            return
+
+        self.view = "main"
+        self.message = f"Restored from '{backup_path.name}'."
+
     def go_back(self) -> None:
-        if self.view in {"help", "manage_habits", "rename_habits"}:
+        if self.view == "manage_backups":
+            self.view = "backups"
+        elif self.view in {"help", "manage_habits", "rename_habits", "backups"}:
             self.view = "main"
         self.message = ""
 
@@ -296,6 +469,9 @@ class CalendarApp:
 
         if normalized == "/help":
             self.open_help()
+            return True
+        if normalized == "/backup":
+            self.open_backups()
             return True
         if normalized == "/delhabit":
             self.open_manage_habits()
@@ -373,6 +549,14 @@ class CalendarApp:
                 self.move_month(1)
             elif hitbox.name == "back":
                 self.go_back()
+            elif hitbox.name == "create_backup":
+                self.create_backup()
+            elif hitbox.name == "manage_backups":
+                self.open_manage_backups()
+            elif hitbox.name == "delete_backup" and hitbox.value is not None:
+                self.delete_backup(screen, Path(str(hitbox.value)))
+            elif hitbox.name == "restore_backup" and hitbox.value is not None:
+                self.restore_backup(screen, Path(str(hitbox.value)))
             elif hitbox.name == "delete_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
                 self.delete_habit(screen, int(habit_id), str(habit_name))
@@ -404,6 +588,10 @@ class CalendarApp:
             self._draw_manage_habits_page(screen)
         elif self.view == "rename_habits":
             self._draw_rename_habits_page(screen)
+        elif self.view == "backups":
+            self._draw_backups_page(screen)
+        elif self.view == "manage_backups":
+            self._draw_manage_backups_page(screen)
         else:
             self._draw_header(screen)
             self._draw_calendar(screen)
@@ -499,8 +687,61 @@ class CalendarApp:
             y = 4 + index * 2
             self._addstr(screen, y, CALENDAR_LEFT, command, curses.A_BOLD)
             self._addstr(screen, y, CALENDAR_LEFT + 14, description)
-        self._addstr(screen, 12, CALENDAR_LEFT, "Press / from the main screen to enter a command. Press b to go back.")
-        self._draw_message(screen, 15)
+        self._addstr(screen, 15, CALENDAR_LEFT, "Press / from the main screen to enter a command. Press b to go back.")
+        self._draw_message(screen, 16)
+
+    def _draw_backups_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Backups", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        create_label = "Create Backup"
+        manage_label = "Manage Backups"
+        self._addstr(screen, 3, CALENDAR_LEFT, create_label, curses.A_BOLD)
+        self._addstr(screen, 5, CALENDAR_LEFT, manage_label, curses.A_BOLD)
+        self.hitboxes.append(HitBox("create_backup", 3, CALENDAR_LEFT, CALENDAR_LEFT + len(create_label) - 1))
+        self.hitboxes.append(HitBox("manage_backups", 5, CALENDAR_LEFT, CALENDAR_LEFT + len(manage_label) - 1))
+        self._draw_message(screen, 16)
+
+    def _draw_manage_backups_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Manage Backups", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        backups = list_backup_files(self.store.db_path)
+        legend = "Legend: a automatic, o on-demand"
+        if not backups:
+            self._addstr(screen, 4, CALENDAR_LEFT, "No backups found.")
+            self._addstr(screen, 15, CALENDAR_LEFT, legend)
+            self._draw_message(screen, 16)
+            return
+
+        self._addstr(screen, 3, CALENDAR_LEFT, "Backup File", curses.A_BOLD)
+        self._addstr(screen, 3, DETAIL_LEFT + 20, "Actions", curses.A_BOLD)
+
+        for index, backup_path in enumerate(backups[:9]):
+            y = 5 + index
+            backup_label = self._truncate(backup_path.name, 42)
+            restore_label = "Restore"
+            delete_label = "Delete"
+            restore_x = DETAIL_LEFT + 20
+            delete_x = restore_x + len(restore_label) + 3
+            self._addstr(screen, y, CALENDAR_LEFT, backup_label)
+            self._addstr(screen, y, restore_x, restore_label, curses.A_BOLD)
+            self._addstr(screen, y, delete_x, delete_label, curses.A_BOLD)
+            self.hitboxes.append(
+                HitBox("restore_backup", y, restore_x, restore_x + len(restore_label) - 1, backup_path)
+            )
+            self.hitboxes.append(
+                HitBox("delete_backup", y, delete_x, delete_x + len(delete_label) - 1, backup_path)
+            )
+
+        self._addstr(screen, 15, CALENDAR_LEFT, legend)
+        if len(backups) > 9:
+            self._addstr(screen, 16, CALENDAR_LEFT, f"Showing 9 of {len(backups)} backups.")
+        self._draw_message(screen, 17)
 
     def _draw_manage_habits_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -774,20 +1015,70 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="print a non-interactive month view and exit",
     )
+    parser.add_argument(
+        "--backup",
+        nargs="?",
+        const="",
+        metavar="PATH",
+        help="create an on-demand SQLite backup and exit; defaults to a timestamped file beside the database",
+    )
+    parser.add_argument(
+        "--restore",
+        type=Path,
+        metavar="PATH",
+        help="restore the SQLite database from a backup file and exit",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="allow --restore to overwrite an existing database without confirmation",
+    )
     return parser.parse_args()
+
+
+def confirm_restore(db_path: Path, backup_path: Path) -> bool:
+    prompt = (
+        f"Restore {backup_path} over existing database {db_path}? "
+        "Type RESTORE to continue: "
+    )
+    try:
+        return input(prompt) == "RESTORE"
+    except EOFError:
+        return False
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.restore is not None:
+        if Path(args.db).exists() and not args.force and not confirm_restore(args.db, args.restore):
+            raise SystemExit("Restore cancelled.")
+        restore_database(args.db, args.restore, force=True)
+        print(f"Restored {args.db} from {args.restore}")
+        return
+
     selection = CalendarSelection.from_args(args.year, args.month)
     store = HabitStore(args.db)
 
     try:
+        if args.backup is not None:
+            destination = Path(args.backup) if args.backup else None
+            backup_path = store.backup(destination)
+            print(f"Backup saved to {backup_path}")
+            return
+
         if args.plain:
             print(build_month_view(selection, store))
             return
 
         app = CalendarApp(selection=selection, store=store, use_color=not args.no_color)
+        try:
+            automatic_backup_path = create_automatic_backup(store)
+        except OSError as exc:
+            app.message = f"Automatic backup failed: {exc}"
+        else:
+            if automatic_backup_path is not None:
+                app.message = f"Automatic backup saved to {automatic_backup_path}"
         curses.wrapper(run_curses, app)
     finally:
         store.close()
