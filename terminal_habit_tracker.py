@@ -31,6 +31,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "Show this command list."),
     ("/backup", "Open backup tools."),
     ("/managehabit", "Open habit management."),
+    ("/notes", "Browse saved habit notes."),
     ("/quit", "Quit the app."),
 )
 
@@ -73,6 +74,20 @@ class HabitStatus:
     start_date: date
     status: str
     completed_at: date | None = None
+
+
+@dataclass(frozen=True)
+class HabitNoteCount:
+    habit_id: int
+    name: str
+    note_count: int
+
+
+@dataclass(frozen=True)
+class HabitNoteRef:
+    habit_id: int
+    habit_name: str
+    note_date: date
 
 
 @dataclass(frozen=True)
@@ -368,6 +383,50 @@ class HabitStore:
         ).fetchall()
         return {int(row["habit_id"]) for row in rows}
 
+    def note_counts_by_habit(self) -> list[HabitNoteCount]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                habits.id,
+                habits.name,
+                COUNT(habit_notes.note_date) AS note_count
+            FROM habits
+            LEFT JOIN habit_notes
+                ON habit_notes.habit_id = habits.id
+            GROUP BY habits.id, habits.name
+            ORDER BY lower(habits.name), habits.name, habits.id
+            """
+        ).fetchall()
+        return [
+            HabitNoteCount(
+                habit_id=int(row["id"]),
+                name=str(row["name"]),
+                note_count=int(row["note_count"]),
+            )
+            for row in rows
+        ]
+
+    def notes_for_habit(self, habit_id: int) -> list[HabitNoteRef]:
+        rows = self.connection.execute(
+            """
+            SELECT habits.id, habits.name, habit_notes.note_date
+            FROM habit_notes
+            JOIN habits
+                ON habits.id = habit_notes.habit_id
+            WHERE habits.id = ?
+            ORDER BY habit_notes.note_date DESC
+            """,
+            (habit_id,),
+        ).fetchall()
+        return [
+            HabitNoteRef(
+                habit_id=int(row["id"]),
+                habit_name=str(row["name"]),
+                note_date=date.fromisoformat(str(row["note_date"])),
+            )
+            for row in rows
+        ]
+
     def month_summary(self, year: int, month: int) -> dict[int, tuple[int, int]]:
         summary: dict[int, tuple[int, int]] = {}
         _, last_day = calendar.monthrange(year, month)
@@ -530,6 +589,13 @@ def status_label(status: str) -> str:
     return status.title()
 
 
+def note_title_for(habit_name: str, note_date: date) -> str:
+    cleaned_name = re.sub(r"[^a-z0-9]+", "-", habit_name.lower()).strip("-")
+    if not cleaned_name:
+        cleaned_name = "habit"
+    return f"{cleaned_name}-{note_date.isoformat()}"
+
+
 @dataclass
 class CalendarApp:
     selection: CalendarSelection
@@ -541,6 +607,11 @@ class CalendarApp:
     hitboxes: list[HitBox] = field(default_factory=list)
     clicked_notification_dates: set[date] = field(default_factory=set)
     notification_scroll: int = 0
+    notes_scroll: int = 0
+    habit_notes_scroll: int = 0
+    selected_notes_habit_id: int | None = None
+    selected_notes_habit_name: str = ""
+    note_return_view: str = "main"
     challenge_habit_id: int | None = None
     challenge_habit_name: str = ""
     challenge_new_habit_name: str = ""
@@ -633,10 +704,40 @@ class CalendarApp:
         self.notification_scroll = 0
         self.message = ""
 
+    def open_notes_browser(self) -> None:
+        self.view = "notes"
+        self.notes_scroll = 0
+        self.message = ""
+
+    def open_habit_notes(self, habit_id: int, habit_name: str, note_count: int) -> None:
+        if note_count == 0:
+            self.message = f"No notes exist for {habit_name}."
+            return
+        self.selected_notes_habit_id = habit_id
+        self.selected_notes_habit_name = habit_name
+        self.habit_notes_scroll = 0
+        self.view = "habit_notes"
+        self.message = ""
+
     def scroll_notifications(self, delta: int, page_size: int) -> None:
         notifications = self.store.past_pending_notifications()
         max_scroll = max(0, len(notifications) - max(1, page_size))
         self.notification_scroll = min(max_scroll, max(0, self.notification_scroll + delta))
+        self.message = ""
+
+    def scroll_notes(self, delta: int, page_size: int) -> None:
+        habits = self.store.note_counts_by_habit()
+        max_scroll = max(0, len(habits) - max(1, page_size))
+        self.notes_scroll = min(max_scroll, max(0, self.notes_scroll + delta))
+        self.message = ""
+
+    def scroll_habit_notes(self, delta: int, page_size: int) -> None:
+        if self.selected_notes_habit_id is None:
+            self.habit_notes_scroll = 0
+            return
+        notes = self.store.notes_for_habit(self.selected_notes_habit_id)
+        max_scroll = max(0, len(notes) - max(1, page_size))
+        self.habit_notes_scroll = min(max_scroll, max(0, self.habit_notes_scroll + delta))
         self.message = ""
 
     def open_notification_date(self, notification_day: date) -> None:
@@ -650,7 +751,13 @@ class CalendarApp:
         self.view = "manage_backups"
         self.message = ""
 
-    def open_note_editor(self, habit_id: int, habit_name: str, note_date: date) -> None:
+    def open_note_editor(
+        self,
+        habit_id: int,
+        habit_name: str,
+        note_date: date,
+        return_view: str = "main",
+    ) -> None:
         body = self.store.get_note(habit_id, note_date)
         self.note_habit_id = habit_id
         self.note_habit_name = habit_name
@@ -662,6 +769,7 @@ class CalendarApp:
         self.note_editing = False
         self.note_command = None
         self.note_scroll = 0
+        self.note_return_view = return_view
         self.view = "note_editor"
         self.message = "Locked. Press i to insert, : for commands."
 
@@ -690,7 +798,7 @@ class CalendarApp:
         return True
 
     def close_note_editor(self) -> None:
-        self.view = "main"
+        self.view = self.note_return_view
         self.note_editing = False
         self.note_command = None
         self.message = ""
@@ -698,10 +806,7 @@ class CalendarApp:
     def note_title(self) -> str:
         if self.note_date is None:
             return "note"
-        cleaned_name = re.sub(r"[^a-z0-9]+", "-", self.note_habit_name.lower()).strip("-")
-        if not cleaned_name:
-            cleaned_name = "habit"
-        return f"{cleaned_name}-{self.note_date.isoformat()}"
+        return note_title_for(self.note_habit_name, self.note_date)
 
     def create_backup(self) -> None:
         backup_path = self.store.backup()
@@ -767,7 +872,9 @@ class CalendarApp:
             self.view = "complete_habits"
         elif self.view in {"rename_habits", "complete_habits", "delete_habits"}:
             self.view = "manage_habits"
-        elif self.view in {"help", "manage_habits", "backups", "notifications"}:
+        elif self.view == "habit_notes":
+            self.view = "notes"
+        elif self.view in {"help", "manage_habits", "backups", "notifications", "notes"}:
             self.view = "main"
         self.message = ""
 
@@ -788,6 +895,9 @@ class CalendarApp:
             return True
         if normalized == "/managehabit":
             self.open_manage_habits()
+            return True
+        if normalized == "/notes":
+            self.open_notes_browser()
             return True
         if normalized == "/quit":
             return False
@@ -978,6 +1088,12 @@ class CalendarApp:
                 self.open_notifications()
             elif hitbox.name == "notification" and hitbox.value is not None:
                 self.open_notification_date(hitbox.value)
+            elif hitbox.name == "notes_habit" and hitbox.value is not None:
+                habit_id, habit_name, note_count = hitbox.value
+                self.open_habit_notes(int(habit_id), str(habit_name), int(note_count))
+            elif hitbox.name == "habit_note" and hitbox.value is not None:
+                habit_id, habit_name, note_date = hitbox.value
+                self.open_note_editor(int(habit_id), str(habit_name), note_date, "habit_notes")
             elif hitbox.name == "delete_backup" and hitbox.value is not None:
                 self.delete_backup(screen, Path(str(hitbox.value)))
             elif hitbox.name == "restore_backup" and hitbox.value is not None:
@@ -1065,6 +1181,10 @@ class CalendarApp:
             self._draw_manage_backups_page(screen)
         elif self.view == "notifications":
             self._draw_notifications_page(screen)
+        elif self.view == "notes":
+            self._draw_notes_page(screen)
+        elif self.view == "habit_notes":
+            self._draw_habit_notes_page(screen)
         elif self.view == "note_editor":
             self._draw_note_editor_page(screen)
         else:
@@ -1201,7 +1321,9 @@ class CalendarApp:
             self._handle_note_edit_key(key)
             return
 
-        if key == ord("^"):
+        if key == 27:
+            self.message = "Use :q to close or :wq to save and close."
+        elif key == ord("^"):
             self._move_note_cursor_first_nonblank()
         elif key == ord("$"):
             self.note_cursor_x = len(self.note_lines[self.note_cursor_y])
@@ -1431,6 +1553,99 @@ class CalendarApp:
         elif cursor_display_y >= self.note_scroll + visible_count:
             self.note_scroll = cursor_display_y - visible_count + 1
         self.note_scroll = max(0, min(self.note_scroll, max(0, len(display_lines) - visible_count)))
+
+    def _draw_notes_page(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
+        status_y = max(4, height - 2)
+        message_y = max(4, height - 1)
+        visible_count = max(1, status_y - 4)
+
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Notes", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        habits = self.store.note_counts_by_habit()
+        if not habits:
+            self.notes_scroll = 0
+            self._addstr(screen, 4, CALENDAR_LEFT, "No habits yet.")
+            self._draw_message(screen, message_y)
+            return
+
+        max_scroll = max(0, len(habits) - visible_count)
+        self.notes_scroll = min(self.notes_scroll, max_scroll)
+        visible_habits = habits[self.notes_scroll : self.notes_scroll + visible_count]
+
+        self._addstr(screen, 3, CALENDAR_LEFT, "Habit Notes", curses.A_BOLD)
+        for index, habit in enumerate(visible_habits):
+            y = 5 + index
+            label = f"{habit.name} ({habit.note_count})"
+            style = curses.A_BOLD if habit.note_count else curses.A_DIM
+            self._addstr(screen, y, CALENDAR_LEFT, self._truncate(label, 70), style)
+            self.hitboxes.append(
+                HitBox(
+                    "notes_habit",
+                    y,
+                    CALENDAR_LEFT,
+                    CALENDAR_LEFT + min(len(label), 70) - 1,
+                    (habit.habit_id, habit.name, habit.note_count),
+                )
+            )
+
+        if len(habits) > visible_count:
+            first = self.notes_scroll + 1
+            last = self.notes_scroll + len(visible_habits)
+            self._addstr(screen, status_y, CALENDAR_LEFT, f"Showing {first}-{last} of {len(habits)}. Up/Down scroll.")
+        self._draw_message(screen, message_y)
+
+    def _draw_habit_notes_page(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
+        status_y = max(4, height - 2)
+        message_y = max(4, height - 1)
+        visible_count = max(1, status_y - 4)
+
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Habit Notes", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+        self._addstr(screen, 3, CALENDAR_LEFT, self._truncate(self.selected_notes_habit_name, 42), curses.A_BOLD)
+
+        if self.selected_notes_habit_id is None:
+            self.habit_notes_scroll = 0
+            self._addstr(screen, 5, CALENDAR_LEFT, "No habit selected.")
+            self._draw_message(screen, message_y)
+            return
+
+        notes = self.store.notes_for_habit(self.selected_notes_habit_id)
+        if not notes:
+            self.habit_notes_scroll = 0
+            self._addstr(screen, 5, CALENDAR_LEFT, "No notes exist for this habit.")
+            self._draw_message(screen, message_y)
+            return
+
+        max_scroll = max(0, len(notes) - visible_count)
+        self.habit_notes_scroll = min(self.habit_notes_scroll, max_scroll)
+        visible_notes = notes[self.habit_notes_scroll : self.habit_notes_scroll + visible_count]
+
+        for index, note in enumerate(visible_notes):
+            y = 5 + index
+            label = note_title_for(note.habit_name, note.note_date)
+            self._addstr(screen, y, CALENDAR_LEFT, self._truncate(label, 70), curses.A_BOLD)
+            self.hitboxes.append(
+                HitBox(
+                    "habit_note",
+                    y,
+                    CALENDAR_LEFT,
+                    CALENDAR_LEFT + min(len(label), 70) - 1,
+                    (note.habit_id, note.habit_name, note.note_date),
+                )
+            )
+
+        if len(notes) > visible_count:
+            first = self.habit_notes_scroll + 1
+            last = self.habit_notes_scroll + len(visible_notes)
+            self._addstr(screen, status_y, CALENDAR_LEFT, f"Showing {first}-{last} of {len(notes)}. Up/Down scroll.")
+        self._draw_message(screen, message_y)
 
     def _draw_notifications_page(self, screen: "curses.window") -> None:
         height, _ = screen.getmaxyx()
@@ -1876,7 +2091,10 @@ def build_month_view(selection: CalendarSelection, store: HabitStore | None = No
 
 
 def run_curses(screen: "curses.window", app: CalendarApp) -> None:
-    curses.curs_set(0)
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
     curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
     curses.mouseinterval(0)
 
@@ -1930,6 +2148,34 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             height, _ = screen.getmaxyx()
             page_size = max(1, height - 5)
             app.scroll_notifications(page_size, page_size)
+        elif app.view == "notes" and key in (curses.KEY_UP, ord("k"), ord("K")):
+            height, _ = screen.getmaxyx()
+            app.scroll_notes(-1, max(1, height - 6))
+        elif app.view == "notes" and key in (curses.KEY_DOWN, ord("j"), ord("J")):
+            height, _ = screen.getmaxyx()
+            app.scroll_notes(1, max(1, height - 6))
+        elif app.view == "notes" and key == curses.KEY_PPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 6)
+            app.scroll_notes(-page_size, page_size)
+        elif app.view == "notes" and key == curses.KEY_NPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 6)
+            app.scroll_notes(page_size, page_size)
+        elif app.view == "habit_notes" and key in (curses.KEY_UP, ord("k"), ord("K")):
+            height, _ = screen.getmaxyx()
+            app.scroll_habit_notes(-1, max(1, height - 6))
+        elif app.view == "habit_notes" and key in (curses.KEY_DOWN, ord("j"), ord("J")):
+            height, _ = screen.getmaxyx()
+            app.scroll_habit_notes(1, max(1, height - 6))
+        elif app.view == "habit_notes" and key == curses.KEY_PPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 6)
+            app.scroll_habit_notes(-page_size, page_size)
+        elif app.view == "habit_notes" and key == curses.KEY_NPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 6)
+            app.scroll_habit_notes(page_size, page_size)
         elif app.view == "main" and key in (ord("a"), ord("A")):
             app.add_habit(screen)
         elif app.view == "main" and key == ord("t"):

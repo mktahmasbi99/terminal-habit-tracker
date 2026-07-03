@@ -12,6 +12,7 @@ A small terminal habit tracker with a navigable monthly calendar. It lets you ad
 - Habit completion/archiving that stops future tracking without deleting history
 - Per-day habit status tracking: `Pending`, `Done`, or `Missed`
 - Per-habit daily notes with a locked text editor
+- Hidden `/notes` browser for reviewing saved notes by habit
 - Calendar markers for days with completed, missed, or past pending habits
 - Local SQLite persistence
 - Automatic daily SQLite backups plus on-demand backup and restore commands
@@ -89,6 +90,7 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Use `/help` to list hidden commands
 - Use `/backup` to open backup tools, then choose `Create Backup` or `Manage Backups`
 - Use `/managehabit` to open habit management, then choose `Rename`, `Challenge Mode`, or `Delete [DANGER]`
+- Use `/notes` to browse all habits with note counts, then open a habit's saved notes in reverse chronological order
 - In `Challenge Mode`, choose `Complete Habit` to archive a habit or `Create Challenge` to set an end date for a challenge
 - Create a challenge from an active existing habit or a new habit, then choose `Set Duration` or `Pick Ending Date`
 - `Pick Ending Date` opens a centered calendar picker and confirms both the challenge duration and end date
@@ -135,6 +137,8 @@ Daily notes:
 - `+Note` means the habit has no note on the selected date
 - Highlighted `Note` means the habit has a saved note on the selected date
 - Notes are stored per habit and date, and multiline notes are supported
+- `/notes` lists every habit alphabetically with its note count, including habits with zero notes
+- Clicking a habit with notes opens its notes newest-first by associated note date
 - Long note lines wrap inside the editor instead of running past the frame
 - Note pages open locked so typing does not edit them by accident
 - Press `i` to insert text in a note, then `Esc` to lock it again

@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - Added a dedicated centered calendar picker for challenge ending dates.
 - Added highlighted past-pending notifications with a clickable notifications page.
 - Added per-habit daily notes with a locked multiline editor and `:w`, `:q`, and `:wq` commands.
+- Added `/notes` for browsing all habits with note counts and opening saved notes by habit.
 - Wrapped long note lines inside the editor and moved saved-note highlighting off yellow.
 - Added locked-mode note navigation shortcuts for `^`, `$`, and `w`.
 - Changed note editing entry from `e` to Vim-style `i` insert mode.
