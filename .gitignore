@@ -26,13 +26,15 @@ dist/
 !.env.example
 /prompts.txt
 /todo-ideas.txt
-commit-checklist.txt
+/commit-checklist.txt
+/AGENTS.md
 
 # OS/editor noise
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
 # Local app data
 habit_tracker.sqlite3
 habit_tracker.sqlite3-*

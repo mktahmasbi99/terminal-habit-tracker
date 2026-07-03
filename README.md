@@ -11,7 +11,7 @@ A small terminal habit tracker with a navigable monthly calendar. It lets you ad
 - Daily habit creation from any selected date
 - Habit completion/archiving that stops future tracking without deleting history
 - Per-day habit status tracking: `Pending`, `Done`, or `Missed`
-- Calendar markers for days with completed or missed habits
+- Calendar markers for days with completed, missed, or past pending habits
 - Local SQLite persistence
 - Automatic daily SQLite backups plus on-demand backup and restore commands
 - Plain text month view for quick output or scripting
@@ -80,6 +80,8 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Click `+ Add daily habit` or press `a` to add a habit for the selected date
 - Press `Esc` while adding a habit to cancel without saving
 - Click `Pending`, `Done`, or `Missed` to set a habit status for the selected date
+- Click `Notifications` when shown to review past dates with pending habits, then click a notification to jump to that date
+- Use Up/Down or Page Up/Page Down to scroll the notifications page when needed
 - Press `/` to enter a command; matching commands are suggested as you type, and `Tab` completes a single match
 - Press `h` to open help from the main screen
 - Use `/help` to list hidden commands
@@ -118,10 +120,19 @@ For active habits:
 - Explicit `Done` or `Missed` choices are saved for that specific date
 - Choosing `Pending` clears the saved status for that habit and date
 
+Notifications:
+
+- The main screen shows `Notifications` only when one or more past dates have pending habits
+- Today and future dates do not create notifications
+- The notifications page lists each past pending date on its own line
+- Notification lines are bold until clicked during the current app session
+- Clicking a notification jumps to that date so its habits can be marked `Done` or `Missed`
+
 Calendar markers:
 
 - `+` means at least one active habit on that date is done
 - `!` means at least one habit is missed
+- Past dates with pending habits are highlighted in yellow
 - Pending dates are not marked as done
 
 ## Data Files

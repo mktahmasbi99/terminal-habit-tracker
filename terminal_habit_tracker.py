@@ -75,6 +75,12 @@ class HabitStatus:
 
 
 @dataclass(frozen=True)
+class PendingNotification:
+    day: date
+    pending_count: int
+
+
+@dataclass(frozen=True)
 class HitBox:
     name: str
     y: int
@@ -315,6 +321,49 @@ class HabitStore:
             summary[day_number] = (done_count, missed_count)
         return summary
 
+    def past_pending_notifications(self, today: date | None = None) -> list[PendingNotification]:
+        current_day = today if today is not None else date.today()
+        habits = self.list_habits()
+        if not habits:
+            return []
+
+        earliest_start = min(habit.start_date for habit in habits)
+        if earliest_start >= current_day:
+            return []
+
+        logged_rows = self.connection.execute(
+            """
+            SELECT habit_id, log_date
+            FROM habit_logs
+            WHERE log_date >= ?
+                AND log_date < ?
+            """,
+            (earliest_start.isoformat(), current_day.isoformat()),
+        ).fetchall()
+        logged_dates = {
+            (int(row["habit_id"]), date.fromisoformat(str(row["log_date"])))
+            for row in logged_rows
+        }
+
+        pending_by_date: dict[date, int] = {}
+        yesterday = current_day - timedelta(days=1)
+        for habit in habits:
+            if habit.start_date > yesterday:
+                continue
+            end_date = yesterday
+            if habit.completed_at is not None:
+                end_date = min(end_date, habit.completed_at)
+            if end_date < habit.start_date:
+                continue
+            for active_day in date_range(habit.start_date, end_date + timedelta(days=1)):
+                if (habit.habit_id, active_day) not in logged_dates:
+                    pending_by_date[active_day] = pending_by_date.get(active_day, 0) + 1
+
+        return [
+            PendingNotification(day=day, pending_count=count)
+            for day, count in sorted(pending_by_date.items())
+        ]
+
 
 def default_backup_directory(db_path: Path | str) -> Path:
     resolved = Path(db_path)
@@ -432,6 +481,8 @@ class CalendarApp:
     view: str = "main"
     message: str = ""
     hitboxes: list[HitBox] = field(default_factory=list)
+    clicked_notification_dates: set[date] = field(default_factory=set)
+    notification_scroll: int = 0
     challenge_habit_id: int | None = None
     challenge_habit_name: str = ""
     challenge_new_habit_name: str = ""
@@ -509,6 +560,24 @@ class CalendarApp:
         self.view = "backups"
         self.message = ""
 
+    def open_notifications(self) -> None:
+        self.view = "notifications"
+        self.notification_scroll = 0
+        self.message = ""
+
+    def scroll_notifications(self, delta: int, page_size: int) -> None:
+        notifications = self.store.past_pending_notifications()
+        max_scroll = max(0, len(notifications) - max(1, page_size))
+        self.notification_scroll = min(max_scroll, max(0, self.notification_scroll + delta))
+        self.message = ""
+
+    def open_notification_date(self, notification_day: date) -> None:
+        self.clicked_notification_dates.add(notification_day)
+        self.selection = CalendarSelection(notification_day.year, notification_day.month)
+        self.selected_day = notification_day.day
+        self.view = "main"
+        self.message = f"Selected {notification_day.isoformat()} from notifications."
+
     def open_manage_backups(self) -> None:
         self.view = "manage_backups"
         self.message = ""
@@ -577,7 +646,7 @@ class CalendarApp:
             self.view = "complete_habits"
         elif self.view in {"rename_habits", "complete_habits", "delete_habits"}:
             self.view = "manage_habits"
-        elif self.view in {"help", "manage_habits", "backups"}:
+        elif self.view in {"help", "manage_habits", "backups", "notifications"}:
             self.view = "main"
         self.message = ""
 
@@ -784,6 +853,10 @@ class CalendarApp:
                 self.create_backup()
             elif hitbox.name == "manage_backups":
                 self.open_manage_backups()
+            elif hitbox.name == "notifications":
+                self.open_notifications()
+            elif hitbox.name == "notification" and hitbox.value is not None:
+                self.open_notification_date(hitbox.value)
             elif hitbox.name == "delete_backup" and hitbox.value is not None:
                 self.delete_backup(screen, Path(str(hitbox.value)))
             elif hitbox.name == "restore_backup" and hitbox.value is not None:
@@ -861,6 +934,8 @@ class CalendarApp:
             self._draw_backups_page(screen)
         elif self.view == "manage_backups":
             self._draw_manage_backups_page(screen)
+        elif self.view == "notifications":
+            self._draw_notifications_page(screen)
         else:
             self._draw_header(screen)
             self._draw_calendar(screen)
@@ -885,6 +960,7 @@ class CalendarApp:
     def _draw_calendar(self, screen: "curses.window") -> None:
         today = date.today()
         summary = self.store.month_summary(self.selection.year, self.selection.month)
+        pending_days = {notification.day for notification in self.store.past_pending_notifications(today)}
         self._addstr(screen, CALENDAR_TOP - 2, CALENDAR_LEFT, WEEKDAY_HEADER, curses.A_BOLD)
 
         for row_index, week in enumerate(calendar.monthcalendar(self.selection.year, self.selection.month)):
@@ -904,6 +980,9 @@ class CalendarApp:
                     and self.selection.year == today.year
                 ):
                     style |= self._color(3) | curses.A_BOLD
+                current_date = date(self.selection.year, self.selection.month, day)
+                if current_date in pending_days:
+                    style |= self._color(6) | curses.A_BOLD
 
                 done_count, missed_count = summary.get(day, (0, 0))
                 marker = "!" if missed_count else "+" if done_count else " "
@@ -919,6 +998,20 @@ class CalendarApp:
             return
 
         self._addstr(screen, 1, DETAIL_LEFT, selected.isoformat(), self._color(1) | curses.A_BOLD)
+        notifications = self.store.past_pending_notifications()
+        if notifications:
+            notifications_label = "Notifications"
+            notifications_x = DETAIL_LEFT + 14
+            self._addstr(screen, 1, notifications_x, notifications_label, self._color(6) | curses.A_BOLD)
+            self.hitboxes.append(
+                HitBox(
+                    "notifications",
+                    1,
+                    notifications_x,
+                    notifications_x + len(notifications_label) - 1,
+                )
+            )
+
         add_label = "+ Add daily habit"
         self._addstr(screen, 3, DETAIL_LEFT, add_label, curses.A_BOLD)
         self.hitboxes.append(HitBox("add_habit", 3, DETAIL_LEFT, DETAIL_LEFT + len(add_label) - 1))
@@ -958,6 +1051,46 @@ class CalendarApp:
             self._addstr(screen, y, CALENDAR_LEFT + 14, description)
         self._addstr(screen, 15, CALENDAR_LEFT, "Press / from the main screen to enter a command. Press b to go back.")
         self._draw_message(screen, 16)
+
+    def _draw_notifications_page(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
+        status_y = max(4, height - 2)
+        message_y = max(4, height - 1)
+        visible_count = max(1, status_y - 3)
+
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Notifications", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        notifications = self.store.past_pending_notifications()
+        if not notifications:
+            self.notification_scroll = 0
+            self._addstr(screen, 4, CALENDAR_LEFT, "No notifications.")
+            self._draw_message(screen, message_y)
+            return
+
+        max_scroll = max(0, len(notifications) - visible_count)
+        self.notification_scroll = min(self.notification_scroll, max_scroll)
+        visible_notifications = notifications[self.notification_scroll : self.notification_scroll + visible_count]
+
+        for index, notification in enumerate(visible_notifications):
+            y = 3 + index
+            task_word = "task" if notification.pending_count == 1 else "tasks"
+            label = f"- {notification.day.isoformat()} has {notification.pending_count} pending {task_word}"
+            style = curses.A_NORMAL
+            if notification.day not in self.clicked_notification_dates:
+                style |= curses.A_BOLD
+            self._addstr(screen, y, CALENDAR_LEFT, self._truncate(label, 70), style)
+            self.hitboxes.append(
+                HitBox("notification", y, CALENDAR_LEFT, CALENDAR_LEFT + min(len(label), 70) - 1, notification.day)
+            )
+
+        if len(notifications) > visible_count:
+            first = self.notification_scroll + 1
+            last = self.notification_scroll + len(visible_notifications)
+            self._addstr(screen, status_y, CALENDAR_LEFT, f"Showing {first}-{last} of {len(notifications)}. Up/Down scroll.")
+        self._draw_message(screen, message_y)
 
     def _draw_backups_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -1236,7 +1369,7 @@ class CalendarApp:
         footer_y = CALENDAR_TOP + 8
         self._draw_message(screen)
         self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Pending/Done/Missed. Keys: / commands, h help, q quit, arrows/PgUp/PgDn, t today, a add.")
-        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar markers: + at least one done, ! at least one missed, unmarked days are pending.")
+        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar: + done, ! missed, yellow dates have past pending tasks.")
 
     def _draw_message(self, screen: "curses.window", y: int = CALENDAR_TOP + 8) -> None:
         if self.message:
@@ -1398,6 +1531,20 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             app.move_month(-1)
         elif app.view == "main" and key in (curses.KEY_RIGHT, curses.KEY_NPAGE):
             app.move_month(1)
+        elif app.view == "notifications" and key in (curses.KEY_UP, ord("k"), ord("K")):
+            height, _ = screen.getmaxyx()
+            app.scroll_notifications(-1, max(1, height - 5))
+        elif app.view == "notifications" and key in (curses.KEY_DOWN, ord("j"), ord("J")):
+            height, _ = screen.getmaxyx()
+            app.scroll_notifications(1, max(1, height - 5))
+        elif app.view == "notifications" and key == curses.KEY_PPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 5)
+            app.scroll_notifications(-page_size, page_size)
+        elif app.view == "notifications" and key == curses.KEY_NPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 5)
+            app.scroll_notifications(page_size, page_size)
         elif app.view == "main" and key in (ord("a"), ord("A")):
             app.add_habit(screen)
         elif app.view == "main" and key == ord("t"):
