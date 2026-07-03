@@ -1748,7 +1748,7 @@ class CalendarApp:
     def _draw_footer(self, screen: "curses.window") -> None:
         footer_y = CALENDAR_TOP + 8
         self._draw_message(screen)
-        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark Pending/Done/Missed. Keys: / commands, h help, q quit, arrows/PgUp/PgDn, t today, a add.")
+        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark state, add notes. Keys: / commands, h help, q quit, arrows/PgUp/PgDn, t today, a add.")
         self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar: + done, ! missed, yellow dates have past pending tasks.")
 
     def _draw_message(self, screen: "curses.window", y: int = CALENDAR_TOP + 8) -> None:
