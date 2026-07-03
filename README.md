@@ -11,6 +11,7 @@ A small terminal habit tracker with a navigable monthly calendar. It lets you ad
 - Daily habit creation from any selected date
 - Habit completion/archiving that stops future tracking without deleting history
 - Per-day habit status tracking: `Pending`, `Done`, or `Missed`
+- Per-habit daily notes with a locked text editor
 - Calendar markers for days with completed, missed, or past pending habits
 - Local SQLite persistence
 - Automatic daily SQLite backups plus on-demand backup and restore commands
@@ -80,6 +81,7 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Click `+ Add daily habit` or press `a` to add a habit for the selected date
 - Press `Esc` while adding a habit to cancel without saving
 - Click `Pending`, `Done`, or `Missed` to set a habit status for the selected date
+- Click `+Note` to add a note for a habit on the selected date, or highlighted `Note` to reopen an existing note
 - Click `Notifications` when shown to review past dates with pending habits, then click a notification to jump to that date
 - Use Up/Down or Page Up/Page Down to scroll the notifications page when needed
 - Press `/` to enter a command; matching commands are suggested as you type, and `Tab` completes a single match
@@ -127,6 +129,18 @@ Notifications:
 - The notifications page lists each past pending date on its own line
 - Notification lines are bold until clicked during the current app session
 - Clicking a notification jumps to that date so its habits can be marked `Done` or `Missed`
+
+Daily notes:
+
+- `+Note` means the habit has no note on the selected date
+- Highlighted `Note` means the habit has a saved note on the selected date
+- Notes are stored per habit and date, and multiline notes are supported
+- Long note lines wrap inside the editor instead of running past the frame
+- Note pages open locked so typing does not edit them by accident
+- Press `i` to insert text in a note, then `Esc` to lock it again
+- In insert mode, printable keys insert text, `Enter` adds a line break, `Backspace` deletes, and arrow keys move the cursor
+- In locked mode, use `^` for first nonblank character, `$` for line end, `w` for next word, `:w` to save, `:q` to quit without saving unsaved edits, or `:wq` to save and quit
+- Saving an empty or whitespace-only note deletes it
 
 Calendar markers:
 

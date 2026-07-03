@@ -12,6 +12,11 @@ All notable changes to this project will be documented in this file.
 - Added `Complete Habit` and `Create Challenge` options under `Challenge Mode`.
 - Added challenge creation from an active existing habit or a new habit with either a duration or calendar-picked ending date.
 - Added a dedicated centered calendar picker for challenge ending dates.
+- Added highlighted past-pending notifications with a clickable notifications page.
+- Added per-habit daily notes with a locked multiline editor and `:w`, `:q`, and `:wq` commands.
+- Wrapped long note lines inside the editor and moved saved-note highlighting off yellow.
+- Added locked-mode note navigation shortcuts for `^`, `$`, and `w`.
+- Changed note editing entry from `e` to Vim-style `i` insert mode.
 
 ### Changed
 - Documented completion/archive and habit management behavior in the README.

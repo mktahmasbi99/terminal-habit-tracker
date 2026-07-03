@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import curses
+import re
 import sqlite3
 import shutil
 from dataclasses import dataclass, field
@@ -92,6 +93,15 @@ class HitBox:
         return self.y == y and self.x1 <= x <= self.x2
 
 
+@dataclass(frozen=True)
+class NoteDisplayLine:
+    line_index: int
+    start: int
+    end: int
+    text: str
+    show_line_number: bool
+
+
 def date_range(start: date, stop: date) -> list[date]:
     days: list[date] = []
     current = start
@@ -140,6 +150,15 @@ class HabitStore:
                 status TEXT NOT NULL CHECK (status IN ('done', 'missed')),
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (habit_id, log_date),
+                FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS habit_notes (
+                habit_id INTEGER NOT NULL,
+                note_date TEXT NOT NULL,
+                body TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (habit_id, note_date),
                 FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE
             );
             """
@@ -309,6 +328,45 @@ class HabitStore:
             )
             for row in rows
         ]
+
+    def get_note(self, habit_id: int, note_date: date) -> str:
+        row = self.connection.execute(
+            "SELECT body FROM habit_notes WHERE habit_id = ? AND note_date = ?",
+            (habit_id, note_date.isoformat()),
+        ).fetchone()
+        if row is None:
+            return ""
+        return str(row["body"])
+
+    def save_note(self, habit_id: int, note_date: date, body: str) -> None:
+        if not self.habit_active_on(habit_id, note_date):
+            raise ValueError("Habit is not active on the selected date.")
+
+        if not body.strip():
+            self.connection.execute(
+                "DELETE FROM habit_notes WHERE habit_id = ? AND note_date = ?",
+                (habit_id, note_date.isoformat()),
+            )
+            self.connection.commit()
+            return
+
+        self.connection.execute(
+            """
+            INSERT INTO habit_notes (habit_id, note_date, body, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(habit_id, note_date)
+            DO UPDATE SET body = excluded.body, updated_at = CURRENT_TIMESTAMP
+            """,
+            (habit_id, note_date.isoformat(), body),
+        )
+        self.connection.commit()
+
+    def note_habit_ids_for_day(self, note_date: date) -> set[int]:
+        rows = self.connection.execute(
+            "SELECT habit_id FROM habit_notes WHERE note_date = ?",
+            (note_date.isoformat(),),
+        ).fetchall()
+        return {int(row["habit_id"]) for row in rows}
 
     def month_summary(self, year: int, month: int) -> dict[int, tuple[int, int]]:
         summary: dict[int, tuple[int, int]] = {}
@@ -486,6 +544,16 @@ class CalendarApp:
     challenge_habit_id: int | None = None
     challenge_habit_name: str = ""
     challenge_new_habit_name: str = ""
+    note_habit_id: int | None = None
+    note_habit_name: str = ""
+    note_date: date | None = None
+    note_lines: list[str] = field(default_factory=lambda: [""])
+    note_saved_body: str = ""
+    note_cursor_y: int = 0
+    note_cursor_x: int = 0
+    note_editing: bool = False
+    note_command: str | None = None
+    note_scroll: int = 0
 
     def __post_init__(self) -> None:
         current = date.today()
@@ -581,6 +649,59 @@ class CalendarApp:
     def open_manage_backups(self) -> None:
         self.view = "manage_backups"
         self.message = ""
+
+    def open_note_editor(self, habit_id: int, habit_name: str, note_date: date) -> None:
+        body = self.store.get_note(habit_id, note_date)
+        self.note_habit_id = habit_id
+        self.note_habit_name = habit_name
+        self.note_date = note_date
+        self.note_saved_body = body
+        self.note_lines = body.split("\n") if body else [""]
+        self.note_cursor_y = 0
+        self.note_cursor_x = 0
+        self.note_editing = False
+        self.note_command = None
+        self.note_scroll = 0
+        self.view = "note_editor"
+        self.message = "Locked. Press i to insert, : for commands."
+
+    def note_body(self) -> str:
+        return "\n".join(self.note_lines)
+
+    def note_dirty(self) -> bool:
+        return self.note_body() != self.note_saved_body
+
+    def save_current_note(self) -> bool:
+        if self.note_habit_id is None or self.note_date is None:
+            self.message = "No note is open."
+            return False
+        body = self.note_body()
+        try:
+            self.store.save_note(self.note_habit_id, self.note_date, body)
+        except ValueError as exc:
+            self.message = str(exc)
+            return False
+        self.note_saved_body = body if body.strip() else ""
+        if not body.strip():
+            self.note_lines = [""]
+            self.note_cursor_y = 0
+            self.note_cursor_x = 0
+        self.message = "Note saved."
+        return True
+
+    def close_note_editor(self) -> None:
+        self.view = "main"
+        self.note_editing = False
+        self.note_command = None
+        self.message = ""
+
+    def note_title(self) -> str:
+        if self.note_date is None:
+            return "note"
+        cleaned_name = re.sub(r"[^a-z0-9]+", "-", self.note_habit_name.lower()).strip("-")
+        if not cleaned_name:
+            cleaned_name = "habit"
+        return f"{cleaned_name}-{self.note_date.isoformat()}"
 
     def create_backup(self) -> None:
         backup_path = self.store.backup()
@@ -898,6 +1019,9 @@ class CalendarApp:
             elif hitbox.name == "set_status" and hitbox.value is not None:
                 habit_id, status = hitbox.value
                 self.set_habit_status(int(habit_id), str(status))
+            elif hitbox.name == "note" and hitbox.value is not None:
+                habit_id, habit_name, note_date = hitbox.value
+                self.open_note_editor(int(habit_id), str(habit_name), note_date)
             return
 
     def render(self, screen: "curses.window") -> None:
@@ -909,6 +1033,11 @@ class CalendarApp:
             screen.addstr(0, 0, "Make the terminal at least 76x17.")
             screen.refresh()
             return
+
+        try:
+            curses.curs_set(1 if self.view == "note_editor" and self.note_command is None else 0)
+        except curses.error:
+            pass
 
         if self.view == "help":
             self._draw_help_page(screen)
@@ -936,6 +1065,8 @@ class CalendarApp:
             self._draw_manage_backups_page(screen)
         elif self.view == "notifications":
             self._draw_notifications_page(screen)
+        elif self.view == "note_editor":
+            self._draw_note_editor_page(screen)
         else:
             self._draw_header(screen)
             self._draw_calendar(screen)
@@ -1016,6 +1147,7 @@ class CalendarApp:
         self._addstr(screen, 3, DETAIL_LEFT, add_label, curses.A_BOLD)
         self.hitboxes.append(HitBox("add_habit", 3, DETAIL_LEFT, DETAIL_LEFT + len(add_label) - 1))
 
+        note_habit_ids = self.store.note_habit_ids_for_day(selected)
         habits = self.store.habits_for_day(selected)
         if not habits:
             self._addstr(screen, 5, DETAIL_LEFT, "No habits active yet.")
@@ -1031,13 +1163,18 @@ class CalendarApp:
             missed_label = "Missed"
             pending_x = DETAIL_LEFT + 2
             done_x = DETAIL_LEFT + 12
+            note_label = "Note" if habit.habit_id in note_habit_ids else "+Note"
             missed_x = DETAIL_LEFT + 21
+            note_x = DETAIL_LEFT + 30
+            note_style = self._color(7) if habit.habit_id in note_habit_ids else curses.A_DIM
             self._addstr(screen, y + 1, pending_x, pending_label, self._action_style(habit.status, STATUS_PENDING))
             self._addstr(screen, y + 1, done_x, done_label, self._action_style(habit.status, STATUS_DONE))
             self._addstr(screen, y + 1, missed_x, missed_label, self._action_style(habit.status, STATUS_MISSED))
+            self._addstr(screen, y + 1, note_x, note_label, note_style)
             self.hitboxes.append(HitBox("set_status", y + 1, pending_x, pending_x + len(pending_label) - 1, (habit.habit_id, STATUS_PENDING)))
             self.hitboxes.append(HitBox("set_status", y + 1, done_x, done_x + len(done_label) - 1, (habit.habit_id, STATUS_DONE)))
             self.hitboxes.append(HitBox("set_status", y + 1, missed_x, missed_x + len(missed_label) - 1, (habit.habit_id, STATUS_MISSED)))
+            self.hitboxes.append(HitBox("note", y + 1, note_x, note_x + len(note_label) - 1, (habit.habit_id, habit.name, selected)))
 
     def _draw_help_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -1051,6 +1188,249 @@ class CalendarApp:
             self._addstr(screen, y, CALENDAR_LEFT + 14, description)
         self._addstr(screen, 15, CALENDAR_LEFT, "Press / from the main screen to enter a command. Press b to go back.")
         self._draw_message(screen, 16)
+
+    def handle_note_key(self, key: int) -> None:
+        if self.view != "note_editor":
+            return
+
+        if self.note_command is not None:
+            self._handle_note_command_key(key)
+            return
+
+        if self.note_editing:
+            self._handle_note_edit_key(key)
+            return
+
+        if key == ord("^"):
+            self._move_note_cursor_first_nonblank()
+        elif key == ord("$"):
+            self.note_cursor_x = len(self.note_lines[self.note_cursor_y])
+        elif key in (ord("w"), ord("W")):
+            self._move_note_cursor_next_word()
+        elif key in (ord("i"), ord("I")):
+            self.note_editing = True
+            self.message = "Insert mode. Esc locks the note."
+        elif key == ord(":"):
+            self.note_command = ""
+            self.message = ""
+
+    def _handle_note_command_key(self, key: int) -> None:
+        if key == 27:
+            self.note_command = None
+            self.message = "Command cancelled."
+            return
+        if key in (curses.KEY_ENTER, 10, 13):
+            command = (self.note_command or "").strip().lower()
+            self.note_command = None
+            if command == "w":
+                self.save_current_note()
+            elif command == "q":
+                self.close_note_editor()
+            elif command == "wq":
+                if self.save_current_note():
+                    self.close_note_editor()
+            else:
+                self.message = f"Unknown note command: :{command}"
+            return
+        if key in (curses.KEY_BACKSPACE, 8, 127):
+            if self.note_command:
+                self.note_command = self.note_command[:-1]
+            return
+        if 32 <= key <= 126 and len(self.note_command or "") < 20:
+            self.note_command = (self.note_command or "") + chr(key)
+
+    def _handle_note_edit_key(self, key: int) -> None:
+        if key == 27:
+            self.note_editing = False
+            self.message = "Locked. Press : for commands."
+            return
+        if key in (curses.KEY_LEFT,):
+            self._move_note_cursor_left()
+            return
+        if key in (curses.KEY_RIGHT,):
+            self._move_note_cursor_right()
+            return
+        if key in (curses.KEY_UP,):
+            self.note_cursor_y = max(0, self.note_cursor_y - 1)
+            self.note_cursor_x = min(self.note_cursor_x, len(self.note_lines[self.note_cursor_y]))
+            return
+        if key in (curses.KEY_DOWN,):
+            self.note_cursor_y = min(len(self.note_lines) - 1, self.note_cursor_y + 1)
+            self.note_cursor_x = min(self.note_cursor_x, len(self.note_lines[self.note_cursor_y]))
+            return
+        if key in (curses.KEY_HOME,):
+            self.note_cursor_x = 0
+            return
+        if key in (curses.KEY_END,):
+            self.note_cursor_x = len(self.note_lines[self.note_cursor_y])
+            return
+        if key in (curses.KEY_ENTER, 10, 13):
+            line = self.note_lines[self.note_cursor_y]
+            before = line[: self.note_cursor_x]
+            after = line[self.note_cursor_x :]
+            self.note_lines[self.note_cursor_y] = before
+            self.note_lines.insert(self.note_cursor_y + 1, after)
+            self.note_cursor_y += 1
+            self.note_cursor_x = 0
+            return
+        if key in (curses.KEY_BACKSPACE, 8, 127):
+            self._delete_note_character_before_cursor()
+            return
+        if key == curses.KEY_DC:
+            self._delete_note_character_at_cursor()
+            return
+        if 32 <= key <= 126:
+            line = self.note_lines[self.note_cursor_y]
+            self.note_lines[self.note_cursor_y] = line[: self.note_cursor_x] + chr(key) + line[self.note_cursor_x :]
+            self.note_cursor_x += 1
+
+    def _move_note_cursor_left(self) -> None:
+        if self.note_cursor_x > 0:
+            self.note_cursor_x -= 1
+        elif self.note_cursor_y > 0:
+            self.note_cursor_y -= 1
+            self.note_cursor_x = len(self.note_lines[self.note_cursor_y])
+
+    def _move_note_cursor_right(self) -> None:
+        line_length = len(self.note_lines[self.note_cursor_y])
+        if self.note_cursor_x < line_length:
+            self.note_cursor_x += 1
+        elif self.note_cursor_y < len(self.note_lines) - 1:
+            self.note_cursor_y += 1
+            self.note_cursor_x = 0
+
+    def _move_note_cursor_first_nonblank(self) -> None:
+        line = self.note_lines[self.note_cursor_y]
+        self.note_cursor_x = len(line) - len(line.lstrip()) if line.strip() else 0
+
+    def _move_note_cursor_next_word(self) -> None:
+        y = self.note_cursor_y
+        x = self.note_cursor_x
+        skip_current_word = x < len(self.note_lines[y]) and not self.note_lines[y][x].isspace()
+
+        while y < len(self.note_lines):
+            line = self.note_lines[y]
+            if skip_current_word:
+                while x < len(line) and not line[x].isspace():
+                    x += 1
+                skip_current_word = False
+            while x < len(line) and line[x].isspace():
+                x += 1
+            if x < len(line):
+                self.note_cursor_y = y
+                self.note_cursor_x = x
+                return
+            y += 1
+            x = 0
+
+        self.note_cursor_y = len(self.note_lines) - 1
+        self.note_cursor_x = len(self.note_lines[self.note_cursor_y])
+
+    def _delete_note_character_before_cursor(self) -> None:
+        if self.note_cursor_x > 0:
+            line = self.note_lines[self.note_cursor_y]
+            self.note_lines[self.note_cursor_y] = line[: self.note_cursor_x - 1] + line[self.note_cursor_x :]
+            self.note_cursor_x -= 1
+        elif self.note_cursor_y > 0:
+            current_line = self.note_lines.pop(self.note_cursor_y)
+            self.note_cursor_y -= 1
+            self.note_cursor_x = len(self.note_lines[self.note_cursor_y])
+            self.note_lines[self.note_cursor_y] += current_line
+
+    def _delete_note_character_at_cursor(self) -> None:
+        line = self.note_lines[self.note_cursor_y]
+        if self.note_cursor_x < len(line):
+            self.note_lines[self.note_cursor_y] = line[: self.note_cursor_x] + line[self.note_cursor_x + 1 :]
+        elif self.note_cursor_y < len(self.note_lines) - 1:
+            next_line = self.note_lines.pop(self.note_cursor_y + 1)
+            self.note_lines[self.note_cursor_y] += next_line
+
+    def _draw_note_editor_page(self, screen: "curses.window") -> None:
+        height, width = screen.getmaxyx()
+        title = self.note_title()
+        mode = "INSERT" if self.note_editing else "LOCKED"
+        save_state = "modified" if self.note_dirty() else "saved"
+        self._addstr(screen, 1, CALENDAR_LEFT, self._truncate(title, max(10, width - 30)), self._color(1) | curses.A_BOLD)
+        self._addstr(screen, 1, max(CALENDAR_LEFT, width - 22), f"{mode} {save_state}", curses.A_BOLD)
+
+        body_top = 3
+        command_y = max(body_top + 1, height - 3)
+        footer_y = max(body_top + 2, height - 2)
+        message_y = max(body_top + 3, height - 1)
+        visible_count = max(1, command_y - body_top)
+        text_width = max(1, width - CALENDAR_LEFT - 5)
+        display_lines = self._note_display_lines(text_width)
+        self._ensure_note_cursor_visible(display_lines, visible_count)
+
+        visible_lines = display_lines[self.note_scroll : self.note_scroll + visible_count]
+        for offset, display_line in enumerate(visible_lines):
+            prefix = f"{display_line.line_index + 1:>3} " if display_line.show_line_number else "    "
+            self._addstr(screen, body_top + offset, CALENDAR_LEFT, prefix, curses.A_DIM)
+            self._addstr(screen, body_top + offset, CALENDAR_LEFT + 4, display_line.text)
+
+        if self.note_command is not None:
+            self._addstr(screen, command_y, CALENDAR_LEFT, ":" + self.note_command, curses.A_BOLD)
+        else:
+            self._addstr(screen, command_y, CALENDAR_LEFT, "i insert | Esc lock | :w save | :q quit | :wq save quit")
+        self._addstr(screen, footer_y, CALENDAR_LEFT, "Locked: ^ start, $ end, w next word. Insert: arrows move, Enter inserts line breaks.", curses.A_DIM)
+        self._draw_message(screen, message_y)
+
+        if self.note_command is None:
+            cursor_display_y, cursor_display_x = self._note_cursor_display_position(display_lines)
+            cursor_y = body_top + cursor_display_y - self.note_scroll
+            cursor_x = CALENDAR_LEFT + 4 + cursor_display_x
+            if body_top <= cursor_y < command_y and cursor_x < width:
+                try:
+                    screen.move(cursor_y, cursor_x)
+                except curses.error:
+                    pass
+
+    def _note_display_lines(self, text_width: int) -> list[NoteDisplayLine]:
+        display_lines: list[NoteDisplayLine] = []
+        width = max(1, text_width)
+        for line_index, line in enumerate(self.note_lines):
+            if not line:
+                display_lines.append(NoteDisplayLine(line_index, 0, 0, "", True))
+                continue
+
+            start = 0
+            show_line_number = True
+            while start < len(line):
+                end = min(len(line), start + width)
+                next_start = end
+                if end < len(line):
+                    break_at = line.rfind(" ", start + 1, end + 1)
+                    if break_at > start:
+                        end = break_at
+                        next_start = break_at + 1
+                display_lines.append(
+                    NoteDisplayLine(line_index, start, end, line[start:end], show_line_number)
+                )
+                start = max(next_start, start + 1)
+                show_line_number = False
+        return display_lines or [NoteDisplayLine(0, 0, 0, "", True)]
+
+    def _note_cursor_display_position(self, display_lines: list[NoteDisplayLine]) -> tuple[int, int]:
+        fallback_y = 0
+        fallback_x = 0
+        for display_y, display_line in enumerate(display_lines):
+            if display_line.line_index != self.note_cursor_y:
+                continue
+            fallback_y = display_y
+            fallback_x = min(self.note_cursor_x, display_line.end) - display_line.start
+            if display_line.start <= self.note_cursor_x <= display_line.end:
+                return display_y, max(0, fallback_x)
+        return fallback_y, max(0, fallback_x)
+
+    def _ensure_note_cursor_visible(
+        self, display_lines: list[NoteDisplayLine], visible_count: int
+    ) -> None:
+        cursor_display_y, _ = self._note_cursor_display_position(display_lines)
+        if cursor_display_y < self.note_scroll:
+            self.note_scroll = cursor_display_y
+        elif cursor_display_y >= self.note_scroll + visible_count:
+            self.note_scroll = cursor_display_y - visible_count + 1
+        self.note_scroll = max(0, min(self.note_scroll, max(0, len(display_lines) - visible_count)))
 
     def _draw_notifications_page(self, screen: "curses.window") -> None:
         height, _ = screen.getmaxyx()
@@ -1509,10 +1889,15 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
         curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_RED)
         curses.init_pair(5, curses.COLOR_BLACK, curses.COLOR_GREEN)
         curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+        curses.init_pair(7, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
 
     while True:
         app.render(screen)
         key = screen.getch()
+
+        if app.view == "note_editor":
+            app.handle_note_key(key)
+            continue
 
         if key in (ord("q"), ord("Q")):
             break
