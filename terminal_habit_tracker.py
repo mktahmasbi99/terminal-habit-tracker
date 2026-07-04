@@ -2143,7 +2143,7 @@ class CalendarApp:
             delete_x = restore_x + len(restore_label) + 3
             self._addstr(screen, y, CALENDAR_LEFT, backup_label)
             self._addstr(screen, y, restore_x, restore_label, curses.A_BOLD)
-            self._addstr(screen, y, delete_x, delete_label, curses.A_BOLD)
+            self._addstr(screen, y, delete_x, delete_label, self._danger_style())
             self.hitboxes.append(
                 HitBox("restore_backup", y, restore_x, restore_x + len(restore_label) - 1, backup_path)
             )
@@ -2167,7 +2167,7 @@ class CalendarApp:
         delete_label = "Delete [DANGER]"
         self._addstr(screen, 4, CALENDAR_LEFT, rename_label, curses.A_BOLD)
         self._addstr(screen, 6, CALENDAR_LEFT, challenge_label, curses.A_BOLD)
-        self._addstr(screen, 8, CALENDAR_LEFT, delete_label, curses.A_BOLD)
+        self._addstr(screen, 8, CALENDAR_LEFT, delete_label, self._danger_style())
         self.hitboxes.append(HitBox("manage_rename", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(rename_label) - 1))
         self.hitboxes.append(HitBox("manage_challenge", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(challenge_label) - 1))
         self.hitboxes.append(HitBox("manage_delete", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(delete_label) - 1))
@@ -2194,7 +2194,7 @@ class CalendarApp:
             delete_label = "Delete"
             delete_x = DETAIL_LEFT + 20
             self._addstr(screen, y, CALENDAR_LEFT, habit_label)
-            self._addstr(screen, y, delete_x, delete_label, curses.A_BOLD)
+            self._addstr(screen, y, delete_x, delete_label, self._danger_style())
             self.hitboxes.append(HitBox("delete_habit", y, delete_x, delete_x + len(delete_label) - 1, (habit.habit_id, habit.name)))
 
         if len(habits) > 9:
@@ -2470,6 +2470,9 @@ class CalendarApp:
                     render_prompt()
         finally:
             curses.curs_set(0)
+
+    def _danger_style(self) -> int:
+        return self._color(4) | curses.A_BOLD
 
     def _status_style(self, status: str) -> int:
         if status == STATUS_MISSED:
