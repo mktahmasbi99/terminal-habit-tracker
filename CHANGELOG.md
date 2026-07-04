@@ -15,6 +15,8 @@ All notable changes to this project will be documented in this file.
 - Added highlighted past-pending notifications with a clickable notifications page.
 - Added per-habit daily notes with a locked multiline editor and `:w`, `:q`, and `:wq` commands.
 - Added `/notes` for browsing all habits with note counts and opening saved notes by habit.
+- Added `/stats` for browsing habit statistics, including current streaks, longest streaks, streak history, start dates, completion dates, and note counts.
+- Added `/viewall` and `/viewactive` filters for switching stats pages between all habits and active habits only.
 - Wrapped long note lines inside the editor and moved saved-note highlighting off yellow.
 - Added locked-mode note navigation shortcuts for `^`, `$`, and `w`.
 - Changed note editing entry from `e` to Vim-style `i` insert mode.
@@ -24,6 +26,7 @@ All notable changes to this project will be documented in this file.
 - Replaced direct `/delhabit`, `/renamehabit`, and `/completehabit` command flows with the `/managehabit` menu.
 - Changed habit completion confirmation from typing `COMPLETE` to a Y/N prompt.
 - Changed challenge confirmation messages to include both duration and ending date.
+- Documented `/stats` habit statistics and stats filters in the README.
 - Marked the completed completion/archive TODO as `#DONE`.
 
 ## Initial development

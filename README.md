@@ -13,6 +13,7 @@ A small terminal habit tracker with a navigable monthly calendar. It lets you ad
 - Per-day habit status tracking: `Pending`, `Done`, or `Missed`
 - Per-habit daily notes with a locked text editor
 - Hidden `/notes` browser for reviewing saved notes by habit
+- Hidden `/stats` browser for habit streaks, note counts, and streak history
 - Calendar markers for days with completed, missed, or past pending habits
 - Local SQLite persistence
 - Automatic daily SQLite backups plus on-demand backup and restore commands
@@ -91,6 +92,8 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Use `/backup` to open backup tools, then choose `Create Backup` or `Manage Backups`
 - Use `/managehabit` to open habit management, then choose `Rename`, `Challenge Mode`, or `Delete [DANGER]`
 - Use `/notes` to browse all habits with note counts, then open a habit's saved notes in reverse chronological order
+- Use `/stats` to browse habit streak stats; active habits are bold, and completed habits are plain when shown
+- Use `/viewall` on stats pages to include completed habits, or `/viewactive` to return to active habits only
 - In `Challenge Mode`, choose `Complete Habit` to archive a habit or `Create Challenge` to set an end date for a challenge
 - Create a challenge from an active existing habit or a new habit, then choose `Set Duration` or `Pick Ending Date`
 - `Pick Ending Date` opens a centered calendar picker and confirms both the challenge duration and end date
@@ -131,6 +134,16 @@ Notifications:
 - The notifications page lists each past pending date on its own line
 - Notification lines are bold until clicked during the current app session
 - Clicking a notification jumps to that date so its habits can be marked `Done` or `Missed`
+
+Habit stats:
+
+- `/stats` lists active habits with the current streak count beside each habit
+- Current streaks count consecutive explicit `Done` days; `Missed` and historical `Pending` days break streaks
+- If today is still `Pending`, the current streak is counted through yesterday; if today is `Done`, today is included
+- Clicking a habit opens current streak, longest streak, streak history, start date, completion date when present, and note count
+- Clicking `Streak History` shows all streaks from longest to shortest with their start and end dates
+- Clicking `Notes` opens that habit's saved notes when notes exist
+- `/viewall` includes completed habits in the stats list; active habits are bold and completed habits are plain
 
 Daily notes:
 

@@ -32,6 +32,9 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/backup", "Open backup tools."),
     ("/managehabit", "Open habit management."),
     ("/notes", "Browse saved habit notes."),
+    ("/stats", "Open habit streak stats."),
+    ("/viewall", "Show all habits on stats pages."),
+    ("/viewactive", "Show only active habits on stats pages."),
     ("/quit", "Quit the app."),
 )
 
@@ -88,6 +91,23 @@ class HabitNoteRef:
     habit_id: int
     habit_name: str
     note_date: date
+
+
+@dataclass(frozen=True)
+class HabitStreak:
+    start_date: date
+    end_date: date
+    length: int
+
+
+@dataclass(frozen=True)
+class HabitStats:
+    habit: Habit
+    current_streak: int
+    longest_streak: HabitStreak | None
+    streaks: list[HabitStreak]
+    note_count: int
+    active_today: bool
 
 
 @dataclass(frozen=True)
@@ -427,6 +447,130 @@ class HabitStore:
             for row in rows
         ]
 
+    def note_count_for_habit(self, habit_id: int) -> int:
+        row = self.connection.execute(
+            "SELECT COUNT(*) AS note_count FROM habit_notes WHERE habit_id = ?",
+            (habit_id,),
+        ).fetchone()
+        return int(row["note_count"]) if row is not None else 0
+
+    def habit_stats_list(self, include_completed: bool = False) -> list[HabitStats]:
+        today = date.today()
+        habits = self.list_habits()
+        if not include_completed:
+            habits = [habit for habit in habits if self._habit_active_on_date(habit, today)]
+        return [self.habit_stats(habit.habit_id) for habit in habits]
+
+    def habit_stats(self, habit_id: int) -> HabitStats:
+        habit = self._get_habit(habit_id)
+        today = date.today()
+        streaks = self._streaks_for_habit(habit, today)
+        active_today = self._habit_active_on_date(habit, today)
+        current_streak = 0
+
+        if active_today and streaks:
+            today_status = self._status_for_habit_day(habit.habit_id, today)
+            current_end = today if today_status == STATUS_DONE else today - timedelta(days=1)
+            latest_streak = max(streaks, key=lambda streak: streak.end_date)
+            if latest_streak.end_date == current_end:
+                current_streak = latest_streak.length
+
+        longest_streak = streaks[0] if streaks else None
+        return HabitStats(
+            habit=habit,
+            current_streak=current_streak,
+            longest_streak=longest_streak,
+            streaks=streaks,
+            note_count=self.note_count_for_habit(habit.habit_id),
+            active_today=active_today,
+        )
+
+    def _get_habit(self, habit_id: int) -> Habit:
+        row = self.connection.execute(
+            "SELECT id, name, start_date, completed_at FROM habits WHERE id = ?",
+            (habit_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Habit does not exist.")
+        return Habit(
+            habit_id=int(row["id"]),
+            name=str(row["name"]),
+            start_date=date.fromisoformat(str(row["start_date"])),
+            completed_at=(
+                date.fromisoformat(str(row["completed_at"]))
+                if row["completed_at"] is not None
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _habit_active_on_date(habit: Habit, day: date) -> bool:
+        return habit.start_date <= day and (habit.completed_at is None or habit.completed_at >= day)
+
+    def _status_for_habit_day(self, habit_id: int, day: date) -> str:
+        row = self.connection.execute(
+            "SELECT status FROM habit_logs WHERE habit_id = ? AND log_date = ?",
+            (habit_id, day.isoformat()),
+        ).fetchone()
+        if row is None:
+            return STATUS_PENDING
+        return str(row["status"])
+
+    def _streaks_for_habit(self, habit: Habit, today: date) -> list[HabitStreak]:
+        end_date = today
+        if habit.completed_at is not None:
+            end_date = min(end_date, habit.completed_at)
+        if end_date < habit.start_date:
+            return []
+
+        rows = self.connection.execute(
+            """
+            SELECT log_date, status
+            FROM habit_logs
+            WHERE habit_id = ?
+                AND log_date >= ?
+                AND log_date <= ?
+            ORDER BY log_date
+            """,
+            (habit.habit_id, habit.start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+        statuses = {date.fromisoformat(str(row["log_date"])): str(row["status"]) for row in rows}
+
+        streaks: list[HabitStreak] = []
+        streak_start: date | None = None
+        streak_end: date | None = None
+        for current_day in date_range(habit.start_date, end_date + timedelta(days=1)):
+            if statuses.get(current_day) == STATUS_DONE:
+                if streak_start is None:
+                    streak_start = current_day
+                streak_end = current_day
+                continue
+
+            if streak_start is not None and streak_end is not None:
+                streaks.append(
+                    HabitStreak(
+                        start_date=streak_start,
+                        end_date=streak_end,
+                        length=(streak_end - streak_start).days + 1,
+                    )
+                )
+                streak_start = None
+                streak_end = None
+
+        if streak_start is not None and streak_end is not None:
+            streaks.append(
+                HabitStreak(
+                    start_date=streak_start,
+                    end_date=streak_end,
+                    length=(streak_end - streak_start).days + 1,
+                )
+            )
+
+        return sorted(
+            streaks,
+            key=lambda streak: (-streak.length, streak.start_date, streak.end_date),
+        )
+
     def month_summary(self, year: int, month: int) -> dict[int, tuple[int, int]]:
         summary: dict[int, tuple[int, int]] = {}
         _, last_day = calendar.monthrange(year, month)
@@ -609,6 +753,11 @@ class CalendarApp:
     notification_scroll: int = 0
     notes_scroll: int = 0
     habit_notes_scroll: int = 0
+    stats_scroll: int = 0
+    streaks_scroll: int = 0
+    selected_stats_habit_id: int | None = None
+    selected_stats_habit_name: str = ""
+    stats_include_completed: bool = False
     selected_notes_habit_id: int | None = None
     selected_notes_habit_name: str = ""
     note_return_view: str = "main"
@@ -709,6 +858,32 @@ class CalendarApp:
         self.notes_scroll = 0
         self.message = ""
 
+    def open_stats(self) -> None:
+        self.view = "stats"
+        self.stats_include_completed = False
+        self.stats_scroll = 0
+        self.message = ""
+
+    def set_stats_filter(self, include_completed: bool) -> None:
+        self.stats_include_completed = include_completed
+        self.stats_scroll = 0
+        self.view = "stats"
+        self.message = "Showing all habits." if include_completed else "Showing active habits."
+
+    def open_habit_stats(self, habit_id: int, habit_name: str) -> None:
+        self.selected_stats_habit_id = habit_id
+        self.selected_stats_habit_name = habit_name
+        self.view = "habit_stats"
+        self.message = ""
+
+    def open_streak_history(self) -> None:
+        if self.selected_stats_habit_id is None:
+            self.message = "No habit selected."
+            return
+        self.streaks_scroll = 0
+        self.view = "streak_history"
+        self.message = ""
+
     def open_habit_notes(self, habit_id: int, habit_name: str, note_count: int) -> None:
         if note_count == 0:
             self.message = f"No notes exist for {habit_name}."
@@ -738,6 +913,21 @@ class CalendarApp:
         notes = self.store.notes_for_habit(self.selected_notes_habit_id)
         max_scroll = max(0, len(notes) - max(1, page_size))
         self.habit_notes_scroll = min(max_scroll, max(0, self.habit_notes_scroll + delta))
+        self.message = ""
+
+    def scroll_stats(self, delta: int, page_size: int) -> None:
+        stats = self.store.habit_stats_list(self.stats_include_completed)
+        max_scroll = max(0, len(stats) - max(1, page_size))
+        self.stats_scroll = min(max_scroll, max(0, self.stats_scroll + delta))
+        self.message = ""
+
+    def scroll_streak_history(self, delta: int, page_size: int) -> None:
+        if self.selected_stats_habit_id is None:
+            self.streaks_scroll = 0
+            return
+        stats = self.store.habit_stats(self.selected_stats_habit_id)
+        max_scroll = max(0, len(stats.streaks) - max(1, page_size))
+        self.streaks_scroll = min(max_scroll, max(0, self.streaks_scroll + delta))
         self.message = ""
 
     def open_notification_date(self, notification_day: date) -> None:
@@ -873,8 +1063,15 @@ class CalendarApp:
         elif self.view in {"rename_habits", "complete_habits", "delete_habits"}:
             self.view = "manage_habits"
         elif self.view == "habit_notes":
-            self.view = "notes"
-        elif self.view in {"help", "manage_habits", "backups", "notifications", "notes"}:
+            if self.selected_stats_habit_id is not None:
+                self.view = "habit_stats"
+            else:
+                self.view = "notes"
+        elif self.view == "streak_history":
+            self.view = "habit_stats"
+        elif self.view == "habit_stats":
+            self.view = "stats"
+        elif self.view in {"help", "manage_habits", "backups", "notifications", "notes", "stats"}:
             self.view = "main"
         self.message = ""
 
@@ -897,7 +1094,17 @@ class CalendarApp:
             self.open_manage_habits()
             return True
         if normalized == "/notes":
+            self.selected_stats_habit_id = None
             self.open_notes_browser()
+            return True
+        if normalized == "/stats":
+            self.open_stats()
+            return True
+        if normalized == "/viewall":
+            self.set_stats_filter(True)
+            return True
+        if normalized == "/viewactive":
+            self.set_stats_filter(False)
             return True
         if normalized == "/quit":
             return False
@@ -1094,6 +1301,14 @@ class CalendarApp:
             elif hitbox.name == "habit_note" and hitbox.value is not None:
                 habit_id, habit_name, note_date = hitbox.value
                 self.open_note_editor(int(habit_id), str(habit_name), note_date, "habit_notes")
+            elif hitbox.name == "stats_habit" and hitbox.value is not None:
+                habit_id, habit_name = hitbox.value
+                self.open_habit_stats(int(habit_id), str(habit_name))
+            elif hitbox.name == "stats_streak_history":
+                self.open_streak_history()
+            elif hitbox.name == "stats_notes" and hitbox.value is not None:
+                habit_id, habit_name, note_count = hitbox.value
+                self.open_habit_notes(int(habit_id), str(habit_name), int(note_count))
             elif hitbox.name == "delete_backup" and hitbox.value is not None:
                 self.delete_backup(screen, Path(str(hitbox.value)))
             elif hitbox.name == "restore_backup" and hitbox.value is not None:
@@ -1185,6 +1400,12 @@ class CalendarApp:
             self._draw_notes_page(screen)
         elif self.view == "habit_notes":
             self._draw_habit_notes_page(screen)
+        elif self.view == "stats":
+            self._draw_stats_page(screen)
+        elif self.view == "habit_stats":
+            self._draw_habit_stats_page(screen)
+        elif self.view == "streak_history":
+            self._draw_streak_history_page(screen)
         elif self.view == "note_editor":
             self._draw_note_editor_page(screen)
         else:
@@ -1303,11 +1524,12 @@ class CalendarApp:
         self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
 
         for index, (command, description) in enumerate(COMMANDS):
-            y = 4 + index * 2
+            y = 3 + index
             self._addstr(screen, y, CALENDAR_LEFT, command, curses.A_BOLD)
             self._addstr(screen, y, CALENDAR_LEFT + 14, description)
-        self._addstr(screen, 15, CALENDAR_LEFT, "Press / from the main screen to enter a command. Press b to go back.")
-        self._draw_message(screen, 16)
+        footer_y = 3 + len(COMMANDS) + 1
+        self._addstr(screen, footer_y, CALENDAR_LEFT, "Press / to enter a command. Press b to go back.")
+        self._draw_message(screen, footer_y + 1)
 
     def handle_note_key(self, key: int) -> None:
         if self.view != "note_editor":
@@ -1553,6 +1775,169 @@ class CalendarApp:
         elif cursor_display_y >= self.note_scroll + visible_count:
             self.note_scroll = cursor_display_y - visible_count + 1
         self.note_scroll = max(0, min(self.note_scroll, max(0, len(display_lines) - visible_count)))
+
+    def _draw_stats_page(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
+        status_y = max(4, height - 3)
+        footer_y = max(4, height - 2)
+        message_y = max(4, height - 1)
+        visible_count = max(1, status_y - 5)
+
+        back_label = "< Back"
+        title = "Stats" if not self.stats_include_completed else "Stats: All Habits"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, title, self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        stats = self.store.habit_stats_list(self.stats_include_completed)
+        if not stats:
+            self.stats_scroll = 0
+            empty = "No habits yet." if self.stats_include_completed else "No active habits."
+            self._addstr(screen, 4, CALENDAR_LEFT, empty)
+            self._draw_command_footer(screen, footer_y)
+            self._draw_message(screen, message_y)
+            return
+
+        self._addstr(screen, 3, CALENDAR_LEFT, "Habit", curses.A_BOLD)
+        self._addstr(screen, 3, DETAIL_LEFT + 20, "Current", curses.A_BOLD)
+
+        max_scroll = max(0, len(stats) - visible_count)
+        self.stats_scroll = min(self.stats_scroll, max_scroll)
+        visible_stats = stats[self.stats_scroll : self.stats_scroll + visible_count]
+        for index, item in enumerate(visible_stats):
+            y = 4 + index
+            label = self._truncate(item.habit.name, 32)
+            current_label = f"({item.current_streak})"
+            style = curses.A_BOLD if item.active_today else curses.A_NORMAL
+            self._addstr(screen, y, CALENDAR_LEFT, label, style)
+            self._addstr(screen, y, DETAIL_LEFT + 20, current_label, style)
+            self.hitboxes.append(
+                HitBox(
+                    "stats_habit",
+                    y,
+                    CALENDAR_LEFT,
+                    DETAIL_LEFT + 20 + len(current_label) - 1,
+                    (item.habit.habit_id, item.habit.name),
+                )
+            )
+
+        if len(stats) > visible_count:
+            first = self.stats_scroll + 1
+            last = self.stats_scroll + len(visible_stats)
+            self._addstr(screen, status_y, CALENDAR_LEFT, f"Showing {first}-{last} of {len(stats)}. Up/Down scroll.")
+        self._draw_command_footer(screen, footer_y)
+        self._draw_message(screen, message_y)
+
+    def _draw_habit_stats_page(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
+        footer_y = max(4, height - 2)
+        message_y = max(4, height - 1)
+
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Habit Stats", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        if self.selected_stats_habit_id is None:
+            self._addstr(screen, 4, CALENDAR_LEFT, "No habit selected.")
+            self._draw_command_footer(screen, footer_y)
+            self._draw_message(screen, message_y)
+            return
+
+        try:
+            stats = self.store.habit_stats(self.selected_stats_habit_id)
+        except ValueError as exc:
+            self._addstr(screen, 4, CALENDAR_LEFT, str(exc))
+            self._draw_command_footer(screen, footer_y)
+            self._draw_message(screen, message_y)
+            return
+
+        habit = stats.habit
+        self.selected_stats_habit_name = habit.name
+        self._addstr(screen, 3, CALENDAR_LEFT, self._truncate(habit.name, 50), curses.A_BOLD if stats.active_today else curses.A_NORMAL)
+        self._addstr(screen, 5, CALENDAR_LEFT, f"Current streak: {stats.current_streak} {self._day_word(stats.current_streak)}")
+
+        if stats.longest_streak is None:
+            longest_label = "Longest streak: 0 days"
+        else:
+            longest_label = (
+                f"Longest streak: {stats.longest_streak.length} {self._day_word(stats.longest_streak.length)} "
+                f"({stats.longest_streak.start_date.isoformat()} to {stats.longest_streak.end_date.isoformat()})"
+            )
+        self._addstr(screen, 6, CALENDAR_LEFT, self._truncate(longest_label, 70))
+
+        history_label = f"Streak History: {len(stats.streaks)}"
+        self._addstr(screen, 8, CALENDAR_LEFT, history_label, curses.A_BOLD)
+        self.hitboxes.append(HitBox("stats_streak_history", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(history_label) - 1))
+
+        self._addstr(screen, 10, CALENDAR_LEFT, f"Start date: {habit.start_date.isoformat()}")
+        if habit.completed_at is not None:
+            self._addstr(screen, 11, CALENDAR_LEFT, f"Completion date: {habit.completed_at.isoformat()}")
+
+        notes_y = 13 if habit.completed_at is not None else 12
+        notes_label = f"Notes: {stats.note_count}"
+        notes_style = curses.A_BOLD if stats.note_count else curses.A_DIM
+        self._addstr(screen, notes_y, CALENDAR_LEFT, notes_label, notes_style)
+        self.hitboxes.append(
+            HitBox(
+                "stats_notes",
+                notes_y,
+                CALENDAR_LEFT,
+                CALENDAR_LEFT + len(notes_label) - 1,
+                (habit.habit_id, habit.name, stats.note_count),
+            )
+        )
+
+        self._draw_command_footer(screen, footer_y)
+        self._draw_message(screen, message_y)
+
+    def _draw_streak_history_page(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
+        status_y = max(4, height - 3)
+        footer_y = max(4, height - 2)
+        message_y = max(4, height - 1)
+        visible_count = max(1, status_y - 5)
+
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Streak History", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        if self.selected_stats_habit_id is None:
+            self.streaks_scroll = 0
+            self._addstr(screen, 4, CALENDAR_LEFT, "No habit selected.")
+            self._draw_command_footer(screen, footer_y)
+            self._draw_message(screen, message_y)
+            return
+
+        stats = self.store.habit_stats(self.selected_stats_habit_id)
+        self._addstr(screen, 3, CALENDAR_LEFT, self._truncate(stats.habit.name, 42), curses.A_BOLD if stats.active_today else curses.A_NORMAL)
+        self._addstr(screen, 4, CALENDAR_LEFT, "Length", curses.A_BOLD)
+        self._addstr(screen, 4, DETAIL_LEFT, "Dates", curses.A_BOLD)
+
+        if not stats.streaks:
+            self.streaks_scroll = 0
+            self._addstr(screen, 6, CALENDAR_LEFT, "No done streaks yet.")
+            self._draw_command_footer(screen, footer_y)
+            self._draw_message(screen, message_y)
+            return
+
+        max_scroll = max(0, len(stats.streaks) - visible_count)
+        self.streaks_scroll = min(self.streaks_scroll, max_scroll)
+        visible_streaks = stats.streaks[self.streaks_scroll : self.streaks_scroll + visible_count]
+        for index, streak in enumerate(visible_streaks):
+            y = 6 + index
+            length_label = f"{streak.length} {self._day_word(streak.length)}"
+            date_label = f"{streak.start_date.isoformat()} to {streak.end_date.isoformat()}"
+            self._addstr(screen, y, CALENDAR_LEFT, length_label)
+            self._addstr(screen, y, DETAIL_LEFT, date_label)
+
+        if len(stats.streaks) > visible_count:
+            first = self.streaks_scroll + 1
+            last = self.streaks_scroll + len(visible_streaks)
+            self._addstr(screen, status_y, CALENDAR_LEFT, f"Showing {first}-{last} of {len(stats.streaks)}. Up/Down scroll.")
+        self._draw_command_footer(screen, footer_y)
+        self._draw_message(screen, message_y)
 
     def _draw_notes_page(self, screen: "curses.window") -> None:
         height, _ = screen.getmaxyx()
@@ -1960,6 +2345,13 @@ class CalendarApp:
 
         self._draw_message(screen, min(height - 2, top + 8))
 
+    def _draw_command_footer(self, screen: "curses.window", y: int) -> None:
+        self._addstr(screen, y, CALENDAR_LEFT, "Type / for commands. Stats: /viewall and /viewactive switch the habit list.", curses.A_DIM)
+
+    @staticmethod
+    def _day_word(count: int) -> str:
+        return "day" if count == 1 else "days"
+
     def _draw_footer(self, screen: "curses.window") -> None:
         footer_y = CALENDAR_TOP + 8
         self._draw_message(screen)
@@ -2125,7 +2517,7 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             if app.view == "main":
                 break
             app.go_back()
-        elif app.view == "main" and key == ord("/"):
+        elif key == ord("/"):
             if not app.run_command(screen):
                 break
         elif app.view == "main" and key in (ord("h"), ord("H")):
@@ -2176,6 +2568,34 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             height, _ = screen.getmaxyx()
             page_size = max(1, height - 6)
             app.scroll_habit_notes(page_size, page_size)
+        elif app.view == "stats" and key in (curses.KEY_UP, ord("k"), ord("K")):
+            height, _ = screen.getmaxyx()
+            app.scroll_stats(-1, max(1, height - 8))
+        elif app.view == "stats" and key in (curses.KEY_DOWN, ord("j"), ord("J")):
+            height, _ = screen.getmaxyx()
+            app.scroll_stats(1, max(1, height - 8))
+        elif app.view == "stats" and key == curses.KEY_PPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 8)
+            app.scroll_stats(-page_size, page_size)
+        elif app.view == "stats" and key == curses.KEY_NPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 8)
+            app.scroll_stats(page_size, page_size)
+        elif app.view == "streak_history" and key in (curses.KEY_UP, ord("k"), ord("K")):
+            height, _ = screen.getmaxyx()
+            app.scroll_streak_history(-1, max(1, height - 8))
+        elif app.view == "streak_history" and key in (curses.KEY_DOWN, ord("j"), ord("J")):
+            height, _ = screen.getmaxyx()
+            app.scroll_streak_history(1, max(1, height - 8))
+        elif app.view == "streak_history" and key == curses.KEY_PPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 8)
+            app.scroll_streak_history(-page_size, page_size)
+        elif app.view == "streak_history" and key == curses.KEY_NPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = max(1, height - 8)
+            app.scroll_streak_history(page_size, page_size)
         elif app.view == "main" and key in (ord("a"), ord("A")):
             app.add_habit(screen)
         elif app.view == "main" and key == ord("t"):
