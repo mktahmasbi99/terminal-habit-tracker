@@ -26,7 +26,8 @@ All notable changes to this project will be documented in this file.
 - Replaced direct `/delhabit`, `/renamehabit`, and `/completehabit` command flows with the `/managehabit` menu.
 - Changed habit completion confirmation from typing `COMPLETE` to a Y/N prompt.
 - Changed challenge confirmation messages to include both duration and ending date.
-- Documented `/stats` habit statistics and stats filters in the README.
+- Changed the main screen to keep the calendar and footer fixed while the selected day's habit list scrolls independently.
+- Documented `/stats` habit statistics, stats filters, and main habit-list scrolling in the README.
 - Marked the completed completion/archive TODO as `#DONE`.
 
 ## Initial development

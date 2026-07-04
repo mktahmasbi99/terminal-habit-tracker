@@ -751,6 +751,7 @@ class CalendarApp:
     hitboxes: list[HitBox] = field(default_factory=list)
     clicked_notification_dates: set[date] = field(default_factory=set)
     notification_scroll: int = 0
+    main_habit_scroll: int = 0
     notes_scroll: int = 0
     habit_notes_scroll: int = 0
     stats_scroll: int = 0
@@ -794,6 +795,7 @@ class CalendarApp:
         else:
             self.selection = self.selection.next_month()
         self.selected_day = None
+        self.main_habit_scroll = 0
         if self.view == "challenge_date_picker":
             self.message = "Pick the challenge ending date."
         else:
@@ -801,6 +803,7 @@ class CalendarApp:
 
     def select_day(self, day: int) -> None:
         self.selected_day = day
+        self.main_habit_scroll = 0
         selected = self.selected_date
         if selected is not None and self.view == "challenge_date_picker":
             self.apply_challenge_end_date(selected)
@@ -915,6 +918,16 @@ class CalendarApp:
         self.habit_notes_scroll = min(max_scroll, max(0, self.habit_notes_scroll + delta))
         self.message = ""
 
+    def scroll_main_habits(self, delta: int, page_size: int) -> None:
+        selected = self.selected_date
+        if selected is None:
+            self.main_habit_scroll = 0
+            return
+        habits = self.store.habits_for_day(selected)
+        max_scroll = max(0, len(habits) - max(1, page_size))
+        self.main_habit_scroll = min(max_scroll, max(0, self.main_habit_scroll + delta))
+        self.message = ""
+
     def scroll_stats(self, delta: int, page_size: int) -> None:
         stats = self.store.habit_stats_list(self.stats_include_completed)
         max_scroll = max(0, len(stats) - max(1, page_size))
@@ -934,6 +947,7 @@ class CalendarApp:
         self.clicked_notification_dates.add(notification_day)
         self.selection = CalendarSelection(notification_day.year, notification_day.month)
         self.selected_day = notification_day.day
+        self.main_habit_scroll = 0
         self.view = "main"
         self.message = f"Selected {notification_day.isoformat()} from notifications."
 
@@ -1131,6 +1145,7 @@ class CalendarApp:
         except ValueError as exc:
             self.message = str(exc)
             return
+        self.main_habit_scroll = 0
         self.message = f"Added '{name}'. Dates default to Pending."
 
     def set_habit_status(self, habit_id: int, status: str) -> None:
@@ -1463,8 +1478,10 @@ class CalendarApp:
                 self.hitboxes.append(HitBox("day", y, x, x + CELL_WIDTH - 2, day))
 
     def _draw_day_panel(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
         selected = self.selected_date
         if selected is None:
+            self.main_habit_scroll = 0
             self._addstr(screen, 1, DETAIL_LEFT, "Select a day", curses.A_BOLD)
             self._addstr(screen, 3, DETAIL_LEFT, "Click a date to manage daily habits.")
             return
@@ -1491,12 +1508,21 @@ class CalendarApp:
         note_habit_ids = self.store.note_habit_ids_for_day(selected)
         habits = self.store.habits_for_day(selected)
         if not habits:
+            self.main_habit_scroll = 0
             self._addstr(screen, 5, DETAIL_LEFT, "No habits active yet.")
             self._addstr(screen, 6, DETAIL_LEFT, "Add one from this date to start tracking.")
             return
 
-        for index, habit in enumerate(habits):
-            y = 5 + index * 3
+        list_top = 5
+        footer_y = self._main_footer_y(height)
+        list_bottom = footer_y - 1
+        visible_count = max(1, (list_bottom - list_top + 2) // 3)
+        max_scroll = max(0, len(habits) - visible_count)
+        self.main_habit_scroll = min(self.main_habit_scroll, max_scroll)
+        visible_habits = habits[self.main_habit_scroll : self.main_habit_scroll + visible_count]
+
+        for index, habit in enumerate(visible_habits):
+            y = list_top + index * 3
             self._addstr(screen, y, DETAIL_LEFT, self._truncate(habit.name, 24), curses.A_BOLD)
 
             pending_label = "Pending"
@@ -1516,6 +1542,11 @@ class CalendarApp:
             self.hitboxes.append(HitBox("set_status", y + 1, done_x, done_x + len(done_label) - 1, (habit.habit_id, STATUS_DONE)))
             self.hitboxes.append(HitBox("set_status", y + 1, missed_x, missed_x + len(missed_label) - 1, (habit.habit_id, STATUS_MISSED)))
             self.hitboxes.append(HitBox("note", y + 1, note_x, note_x + len(note_label) - 1, (habit.habit_id, habit.name, selected)))
+
+        if len(habits) > visible_count:
+            first = self.main_habit_scroll + 1
+            last = self.main_habit_scroll + len(visible_habits)
+            self._addstr(screen, 3, DETAIL_LEFT + 20, f"{first}-{last}/{len(habits)} Up/Down", curses.A_DIM)
 
     def _draw_help_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -2353,10 +2384,21 @@ class CalendarApp:
         return "day" if count == 1 else "days"
 
     def _draw_footer(self, screen: "curses.window") -> None:
-        footer_y = CALENDAR_TOP + 8
-        self._draw_message(screen)
-        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Mouse: click days, add habits, mark state, add notes. Keys: / commands, h help, q quit, arrows/PgUp/PgDn, t today, a add.")
+        height, _ = screen.getmaxyx()
+        footer_y = self._main_footer_y(height)
+        self._draw_message(screen, footer_y)
+        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Keys: / cmd, h help, q quit, Left/Right month, Up/Down habits, t, a.")
         self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar: + done, ! missed, yellow dates have past pending tasks.")
+
+    @staticmethod
+    def _main_footer_y(height: int) -> int:
+        return max(CALENDAR_TOP + 8, height - 4)
+
+    @classmethod
+    def _main_habit_page_size(cls, height: int) -> int:
+        list_top = 5
+        list_bottom = cls._main_footer_y(height) - 1
+        return max(1, (list_bottom - list_top + 2) // 3)
 
     def _draw_message(self, screen: "curses.window", y: int = CALENDAR_TOP + 8) -> None:
         if self.message:
@@ -2522,10 +2564,24 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
                 break
         elif app.view == "main" and key in (ord("h"), ord("H")):
             app.open_help()
-        elif app.view == "main" and key in (curses.KEY_LEFT, curses.KEY_PPAGE):
+        elif app.view == "main" and key == curses.KEY_LEFT:
             app.move_month(-1)
-        elif app.view == "main" and key in (curses.KEY_RIGHT, curses.KEY_NPAGE):
+        elif app.view == "main" and key == curses.KEY_RIGHT:
             app.move_month(1)
+        elif app.view == "main" and key == curses.KEY_UP:
+            height, _ = screen.getmaxyx()
+            app.scroll_main_habits(-1, app._main_habit_page_size(height))
+        elif app.view == "main" and key == curses.KEY_DOWN:
+            height, _ = screen.getmaxyx()
+            app.scroll_main_habits(1, app._main_habit_page_size(height))
+        elif app.view == "main" and key == curses.KEY_PPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = app._main_habit_page_size(height)
+            app.scroll_main_habits(-page_size, page_size)
+        elif app.view == "main" and key == curses.KEY_NPAGE:
+            height, _ = screen.getmaxyx()
+            page_size = app._main_habit_page_size(height)
+            app.scroll_main_habits(page_size, page_size)
         elif app.view == "notifications" and key in (curses.KEY_UP, ord("k"), ord("K")):
             height, _ = screen.getmaxyx()
             app.scroll_notifications(-1, max(1, height - 5))
@@ -2602,6 +2658,7 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             today = date.today()
             app.selection = CalendarSelection(today.year, today.month)
             app.selected_day = today.day
+            app.main_habit_scroll = 0
             app.message = ""
         elif key == curses.KEY_MOUSE:
             try:
