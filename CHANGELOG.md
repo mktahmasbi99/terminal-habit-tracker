@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Added
+- Added current streak counts beside habit names on the main page.
 - Added habit completion/archiving behavior.
 - Completed habits remain visible through their completion date and disappear from future daily lists.
 - Added database support for nullable habit completion dates while preserving historical logs.

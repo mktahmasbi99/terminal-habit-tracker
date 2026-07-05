@@ -15,6 +15,7 @@ A small terminal habit tracker with a navigable monthly calendar. It lets you ad
 - Hidden `/notes` browser for reviewing saved notes by habit
 - Hidden `/stats` browser for habit streaks, note counts, and streak history
 - Calendar markers for days with completed, missed, or past pending habits
+- Current streak counts shown beside each habit on the main page
 - Local SQLite persistence
 - Automatic daily SQLite backups plus on-demand backup and restore commands
 - Plain text month view for quick output or scripting
@@ -127,6 +128,7 @@ For active habits:
 - Dates without a saved status default to `Pending`
 - Explicit `Done` or `Missed` choices are saved for that specific date
 - Choosing `Pending` clears the saved status for that habit and date
+- The main page shows the current streak beside each habit name, calculated through the selected date
 
 Notifications:
 

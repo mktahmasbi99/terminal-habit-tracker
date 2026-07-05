@@ -466,14 +466,7 @@ class HabitStore:
         today = date.today()
         streaks = self._streaks_for_habit(habit, today)
         active_today = self._habit_active_on_date(habit, today)
-        current_streak = 0
-
-        if active_today and streaks:
-            today_status = self._status_for_habit_day(habit.habit_id, today)
-            current_end = today if today_status == STATUS_DONE else today - timedelta(days=1)
-            latest_streak = max(streaks, key=lambda streak: streak.end_date)
-            if latest_streak.end_date == current_end:
-                current_streak = latest_streak.length
+        current_streak = self.current_streak_for_habit(habit.habit_id, today)
 
         longest_streak = streaks[0] if streaks else None
         return HabitStats(
@@ -484,6 +477,22 @@ class HabitStore:
             note_count=self.note_count_for_habit(habit.habit_id),
             active_today=active_today,
         )
+
+    def current_streak_for_habit(self, habit_id: int, through_day: date) -> int:
+        habit = self._get_habit(habit_id)
+        if not self._habit_active_on_date(habit, through_day):
+            return 0
+
+        streaks = self._streaks_for_habit(habit, through_day)
+        if not streaks:
+            return 0
+
+        day_status = self._status_for_habit_day(habit.habit_id, through_day)
+        current_end = through_day if day_status == STATUS_DONE else through_day - timedelta(days=1)
+        latest_streak = max(streaks, key=lambda streak: streak.end_date)
+        if latest_streak.end_date == current_end:
+            return latest_streak.length
+        return 0
 
     def _get_habit(self, habit_id: int) -> Habit:
         row = self.connection.execute(
@@ -1523,7 +1532,9 @@ class CalendarApp:
 
         for index, habit in enumerate(visible_habits):
             y = list_top + index * 3
-            self._addstr(screen, y, DETAIL_LEFT, self._truncate(habit.name, 24), curses.A_BOLD)
+            streak = self.store.current_streak_for_habit(habit.habit_id, selected)
+            habit_label = f"{habit.name} ({streak})"
+            self._addstr(screen, y, DETAIL_LEFT, self._truncate(habit_label, 24), curses.A_BOLD)
 
             pending_label = "Pending"
             done_label = "Done"
