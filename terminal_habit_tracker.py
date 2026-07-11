@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
-WEEKDAY_HEADER = "Mo Tu We Th Fr Sa Su"
+WEEKDAY_NAMES = ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
 CELL_WIDTH = 4
 CALENDAR_LEFT = 4
 CALENDAR_TOP = 5
@@ -749,6 +749,14 @@ def note_title_for(habit_name: str, note_date: date) -> str:
     return f"{cleaned_name}-{note_date.isoformat()}"
 
 
+def weekday_cell_label(weekday_name: str) -> str:
+    return f"{weekday_name:>2}"
+
+
+def plain_weekday_header() -> str:
+    return " ".join(weekday_cell_label(weekday_name) for weekday_name in WEEKDAY_NAMES)
+
+
 @dataclass
 class CalendarApp:
     selection: CalendarSelection
@@ -1457,7 +1465,9 @@ class CalendarApp:
         today = date.today()
         summary = self.store.month_summary(self.selection.year, self.selection.month)
         pending_days = {notification.day for notification in self.store.past_pending_notifications(today)}
-        self._addstr(screen, CALENDAR_TOP - 2, CALENDAR_LEFT, WEEKDAY_HEADER, curses.A_BOLD)
+        for col_index, weekday_name in enumerate(WEEKDAY_NAMES):
+            x = CALENDAR_LEFT + col_index * CELL_WIDTH
+            self._addstr(screen, CALENDAR_TOP - 2, x, weekday_cell_label(weekday_name), curses.A_BOLD)
 
         for row_index, week in enumerate(calendar.monthcalendar(self.selection.year, self.selection.month)):
             y = CALENDAR_TOP + row_index
@@ -2363,7 +2373,9 @@ class CalendarApp:
         self.hitboxes.append(HitBox("previous", top - 3, previous_x, previous_x + len(previous_label) - 1))
         self.hitboxes.append(HitBox("next", top - 3, next_x, next_x + len(next_label) - 1))
 
-        self._addstr(screen, top - 1, left, WEEKDAY_HEADER, curses.A_BOLD)
+        for col_index, weekday_name in enumerate(WEEKDAY_NAMES):
+            x = left + col_index * CELL_WIDTH
+            self._addstr(screen, top - 1, x, weekday_cell_label(weekday_name), curses.A_BOLD)
         for row_index, week in enumerate(calendar.monthcalendar(self.selection.year, self.selection.month)):
             y = top + row_index
             for col_index, day in enumerate(week):
@@ -2520,7 +2532,10 @@ def build_month_view(selection: CalendarSelection, store: HabitStore | None = No
     today = date.today()
     weeks = calendar.monthcalendar(selection.year, selection.month)
     summary = store.month_summary(selection.year, selection.month) if store else {}
-    lines = [f"{calendar.month_name[selection.month]} {selection.year}".center(20), WEEKDAY_HEADER]
+    lines = [
+        f"{calendar.month_name[selection.month]} {selection.year}".center(20),
+        plain_weekday_header(),
+    ]
 
     for week in weeks:
         day_cells: list[str] = []

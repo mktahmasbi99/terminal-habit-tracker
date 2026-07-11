@@ -7,6 +7,7 @@ A small terminal habit tracker with a navigable monthly calendar. It lets you ad
 ## Features
 
 - Interactive monthly calendar in the terminal
+- Optional Textual prototype UI for a more structured terminal interface
 - Mouse support for selecting dates and controls
 - Daily habit creation from any selected date
 - Habit completion/archiving that stops future tracking without deleting history
@@ -34,6 +35,15 @@ Start the interactive app:
 ```bash
 python3 terminal_habit_tracker.py
 ```
+
+Run the optional Textual prototype:
+
+```bash
+python3 -m pip install -r requirements-textual.txt
+python3 textual_habit_tracker.py
+```
+
+The Textual GUI is only a prototype at this time. It currently focuses on the main workflow: choosing dates, adding habits, updating daily statuses, and showing current streak counts beside habit names. Click `+ Add` to focus the habit name field, then press `Enter` to create the habit. The classic `curses` app still contains the complete feature set.
 
 Open a specific month:
 
