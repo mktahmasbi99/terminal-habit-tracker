@@ -67,7 +67,7 @@ class Habit:
     habit_id: int
     name: str
     start_date: date
-    completed_at: date | None = None
+    archived_at: date | None = None
 
 
 @dataclass(frozen=True)
@@ -76,7 +76,23 @@ class HabitStatus:
     name: str
     start_date: date
     status: str
+    archived_at: date | None = None
+
+
+@dataclass(frozen=True)
+class HabitChallenge:
+    challenge_id: int
+    habit_id: int
+    start_date: date
+    end_date: date
     completed_at: date | None = None
+
+
+@dataclass(frozen=True)
+class ChallengeProgress:
+    challenge: HabitChallenge
+    current_streak: int
+    duration_days: int
 
 
 @dataclass(frozen=True)
@@ -176,6 +192,7 @@ class HabitStore:
                 name TEXT NOT NULL,
                 start_date TEXT NOT NULL,
                 completed_at TEXT,
+                archived_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -196,12 +213,101 @@ class HabitStore:
                 PRIMARY KEY (habit_id, note_date),
                 FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS habit_challenges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                habit_id INTEGER NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                completed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS habit_archive_periods (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                habit_id INTEGER NOT NULL,
+                archived_at TEXT NOT NULL,
+                resurrected_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE
+            );
             """
         )
         habit_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(habits)")}
         if "completed_at" not in habit_columns:
             self.connection.execute("ALTER TABLE habits ADD COLUMN completed_at TEXT")
+        if "archived_at" not in habit_columns:
+            self.connection.execute("ALTER TABLE habits ADD COLUMN archived_at TEXT")
+        self._migrate_completed_at()
+        self._ensure_archive_periods()
         self.connection.commit()
+
+    def _migrate_completed_at(self) -> None:
+        today = date.today()
+        rows = self.connection.execute(
+            """
+            SELECT id, start_date, completed_at, archived_at
+            FROM habits
+            WHERE completed_at IS NOT NULL
+            """
+        ).fetchall()
+        for row in rows:
+            habit_id = int(row["id"])
+            completed_at = date.fromisoformat(str(row["completed_at"]))
+            if row["archived_at"] is None and completed_at > today:
+                challenge_exists = self.connection.execute(
+                    """
+                    SELECT 1
+                    FROM habit_challenges
+                    WHERE habit_id = ?
+                        AND start_date = ?
+                        AND end_date = ?
+                    """,
+                    (habit_id, today.isoformat(), completed_at.isoformat()),
+                ).fetchone()
+                if challenge_exists is None:
+                    self.connection.execute(
+                        """
+                        INSERT INTO habit_challenges (habit_id, start_date, end_date)
+                        VALUES (?, ?, ?)
+                        """,
+                        (habit_id, today.isoformat(), completed_at.isoformat()),
+                    )
+            elif row["archived_at"] is None:
+                self.connection.execute(
+                    "UPDATE habits SET archived_at = ? WHERE id = ?",
+                    (completed_at.isoformat(), habit_id),
+                )
+            self.connection.execute("UPDATE habits SET completed_at = NULL WHERE id = ?", (habit_id,))
+
+    def _ensure_archive_periods(self) -> None:
+        rows = self.connection.execute(
+            """
+            SELECT id, archived_at
+            FROM habits
+            WHERE archived_at IS NOT NULL
+            """
+        ).fetchall()
+        for row in rows:
+            period_exists = self.connection.execute(
+                """
+                SELECT 1
+                FROM habit_archive_periods
+                WHERE habit_id = ?
+                    AND archived_at = ?
+                    AND resurrected_at IS NULL
+                """,
+                (int(row["id"]), str(row["archived_at"])),
+            ).fetchone()
+            if period_exists is None:
+                self.connection.execute(
+                    """
+                    INSERT INTO habit_archive_periods (habit_id, archived_at)
+                    VALUES (?, ?)
+                    """,
+                    (int(row["id"]), str(row["archived_at"])),
+                )
 
     def create_habit(self, name: str, start_date: date) -> int:
         cleaned = " ".join(name.split())
@@ -259,7 +365,7 @@ class HabitStore:
     def list_habits(self) -> list[Habit]:
         rows = self.connection.execute(
             """
-            SELECT id, name, start_date, completed_at
+            SELECT id, name, start_date, archived_at
             FROM habits
             ORDER BY start_date, name
             """
@@ -269,9 +375,9 @@ class HabitStore:
                 habit_id=int(row["id"]),
                 name=str(row["name"]),
                 start_date=date.fromisoformat(str(row["start_date"])),
-                completed_at=(
-                    date.fromisoformat(str(row["completed_at"]))
-                    if row["completed_at"] is not None
+                archived_at=(
+                    date.fromisoformat(str(row["archived_at"]))
+                    if row["archived_at"] is not None
                     else None
                 ),
             )
@@ -279,7 +385,10 @@ class HabitStore:
         ]
 
     def list_active_habits(self) -> list[Habit]:
-        return [habit for habit in self.list_habits() if habit.completed_at is None]
+        return [habit for habit in self.list_habits() if habit.archived_at is None]
+
+    def list_archived_habits(self) -> list[Habit]:
+        return [habit for habit in self.list_habits() if habit.archived_at is not None]
 
     def habit_active_on(self, habit_id: int, day: date) -> bool:
         row = self.connection.execute(
@@ -288,29 +397,69 @@ class HabitStore:
             FROM habits
             WHERE id = ?
                 AND start_date <= ?
-                AND (completed_at IS NULL OR completed_at >= ?)
+                AND archived_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM habit_archive_periods
+                    WHERE habit_archive_periods.habit_id = habits.id
+                        AND habit_archive_periods.archived_at <= ?
+                        AND (
+                            habit_archive_periods.resurrected_at IS NULL
+                            OR habit_archive_periods.resurrected_at > ?
+                        )
+                )
             """,
-            (habit_id, day.isoformat(), day.isoformat()),
+            (habit_id, day.isoformat(), day.isoformat(), day.isoformat()),
         ).fetchone()
         return row is not None
 
-    def complete_habit(self, habit_id: int, completion_date: date) -> None:
+    def archive_habit(self, habit_id: int, archive_date: date) -> None:
         row = self.connection.execute(
-            "SELECT start_date, completed_at FROM habits WHERE id = ?",
+            "SELECT start_date, archived_at FROM habits WHERE id = ?",
             (habit_id,),
         ).fetchone()
         if row is None:
             raise ValueError("Habit does not exist.")
-        if row["completed_at"] is not None:
-            raise ValueError("Habit is already completed.")
+        if row["archived_at"] is not None:
+            raise ValueError("Habit is already archived.")
 
         start_date = date.fromisoformat(str(row["start_date"]))
-        if completion_date < start_date:
-            raise ValueError("Completion date cannot be before the habit start date.")
+        if archive_date < start_date:
+            raise ValueError("Archive date cannot be before the habit start date.")
 
         self.connection.execute(
-            "UPDATE habits SET completed_at = ? WHERE id = ?",
-            (completion_date.isoformat(), habit_id),
+            "UPDATE habits SET archived_at = ? WHERE id = ?",
+            (archive_date.isoformat(), habit_id),
+        )
+        self.connection.execute(
+            """
+            INSERT INTO habit_archive_periods (habit_id, archived_at)
+            VALUES (?, ?)
+            """,
+            (habit_id, archive_date.isoformat()),
+        )
+        self.connection.commit()
+
+    def resurrect_habit(self, habit_id: int) -> None:
+        row = self.connection.execute(
+            "SELECT archived_at FROM habits WHERE id = ?",
+            (habit_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Habit does not exist.")
+        if row["archived_at"] is None:
+            raise ValueError("Habit is already active.")
+
+        today = date.today()
+        self.connection.execute("UPDATE habits SET archived_at = NULL WHERE id = ?", (habit_id,))
+        self.connection.execute(
+            """
+            UPDATE habit_archive_periods
+            SET resurrected_at = ?
+            WHERE habit_id = ?
+                AND resurrected_at IS NULL
+            """,
+            (today.isoformat(), habit_id),
         )
         self.connection.commit()
 
@@ -336,17 +485,27 @@ class HabitStore:
                 habits.id,
                 habits.name,
                 habits.start_date,
-                habits.completed_at,
+                habits.archived_at,
                 COALESCE(habit_logs.status, ?) AS status
             FROM habits
             LEFT JOIN habit_logs
                 ON habit_logs.habit_id = habits.id
                 AND habit_logs.log_date = ?
             WHERE habits.start_date <= ?
-                AND (habits.completed_at IS NULL OR habits.completed_at >= ?)
+                AND habits.archived_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM habit_archive_periods
+                    WHERE habit_archive_periods.habit_id = habits.id
+                        AND habit_archive_periods.archived_at <= ?
+                        AND (
+                            habit_archive_periods.resurrected_at IS NULL
+                            OR habit_archive_periods.resurrected_at > ?
+                        )
+                )
             ORDER BY habits.start_date, habits.name
             """,
-            (STATUS_PENDING, day.isoformat(), day.isoformat(), day.isoformat()),
+            (STATUS_PENDING, day.isoformat(), day.isoformat(), day.isoformat(), day.isoformat()),
         ).fetchall()
 
         return [
@@ -355,9 +514,9 @@ class HabitStore:
                 name=str(row["name"]),
                 start_date=date.fromisoformat(str(row["start_date"])),
                 status=str(row["status"]),
-                completed_at=(
-                    date.fromisoformat(str(row["completed_at"]))
-                    if row["completed_at"] is not None
+                archived_at=(
+                    date.fromisoformat(str(row["archived_at"]))
+                    if row["archived_at"] is not None
                     else None
                 ),
             )
@@ -454,10 +613,94 @@ class HabitStore:
         ).fetchone()
         return int(row["note_count"]) if row is not None else 0
 
-    def habit_stats_list(self, include_completed: bool = False) -> list[HabitStats]:
+    def create_challenge(self, habit_id: int, start_date: date, end_date: date) -> int:
+        if end_date < start_date:
+            raise ValueError("Challenge end date cannot be before its start date.")
+        if not self.habit_active_on(habit_id, start_date):
+            raise ValueError("Habit is not active for the challenge start date.")
+
+        overlapping = self.connection.execute(
+            """
+            SELECT 1
+            FROM habit_challenges
+            WHERE habit_id = ?
+                AND start_date <= ?
+                AND end_date >= ?
+            """,
+            (habit_id, end_date.isoformat(), start_date.isoformat()),
+        ).fetchone()
+        if overlapping is not None:
+            raise ValueError("Habit already has a challenge in this date range.")
+
+        cursor = self.connection.execute(
+            """
+            INSERT INTO habit_challenges (habit_id, start_date, end_date)
+            VALUES (?, ?, ?)
+            """,
+            (habit_id, start_date.isoformat(), end_date.isoformat()),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def challenge_for_habit_day(self, habit_id: int, day: date) -> HabitChallenge | None:
+        row = self.connection.execute(
+            """
+            SELECT id, habit_id, start_date, end_date, completed_at
+            FROM habit_challenges
+            WHERE habit_id = ?
+                AND start_date <= ?
+                AND end_date >= ?
+            ORDER BY start_date DESC, id DESC
+            LIMIT 1
+            """,
+            (habit_id, day.isoformat(), day.isoformat()),
+        ).fetchone()
+        if row is None:
+            return None
+        return HabitChallenge(
+            challenge_id=int(row["id"]),
+            habit_id=int(row["habit_id"]),
+            start_date=date.fromisoformat(str(row["start_date"])),
+            end_date=date.fromisoformat(str(row["end_date"])),
+            completed_at=(
+                date.fromisoformat(str(row["completed_at"]))
+                if row["completed_at"] is not None
+                else None
+            ),
+        )
+
+    def challenge_progress_for_habit_day(self, habit_id: int, day: date) -> ChallengeProgress | None:
+        challenge = self.challenge_for_habit_day(habit_id, day)
+        if challenge is None:
+            return None
+
+        progress_day = min(day, challenge.end_date)
+        challenge_habit = self._get_habit(habit_id)
+        challenge_habit = Habit(
+            habit_id=challenge_habit.habit_id,
+            name=challenge_habit.name,
+            start_date=challenge.start_date,
+            archived_at=challenge_habit.archived_at,
+        )
+        streaks = self._streaks_for_habit(challenge_habit, progress_day)
+        current_streak = 0
+        if streaks:
+            day_status = self._status_for_habit_day(habit_id, progress_day)
+            current_end = progress_day if day_status == STATUS_DONE else progress_day - timedelta(days=1)
+            latest_streak = max(streaks, key=lambda streak: streak.end_date)
+            if latest_streak.end_date == current_end:
+                current_streak = latest_streak.length
+
+        return ChallengeProgress(
+            challenge=challenge,
+            current_streak=current_streak,
+            duration_days=(challenge.end_date - challenge.start_date).days + 1,
+        )
+
+    def habit_stats_list(self, include_archived: bool = False) -> list[HabitStats]:
         today = date.today()
         habits = self.list_habits()
-        if not include_completed:
+        if not include_archived:
             habits = [habit for habit in habits if self._habit_active_on_date(habit, today)]
         return [self.habit_stats(habit.habit_id) for habit in habits]
 
@@ -496,7 +739,7 @@ class HabitStore:
 
     def _get_habit(self, habit_id: int) -> Habit:
         row = self.connection.execute(
-            "SELECT id, name, start_date, completed_at FROM habits WHERE id = ?",
+            "SELECT id, name, start_date, archived_at FROM habits WHERE id = ?",
             (habit_id,),
         ).fetchone()
         if row is None:
@@ -505,16 +748,16 @@ class HabitStore:
             habit_id=int(row["id"]),
             name=str(row["name"]),
             start_date=date.fromisoformat(str(row["start_date"])),
-            completed_at=(
-                date.fromisoformat(str(row["completed_at"]))
-                if row["completed_at"] is not None
+            archived_at=(
+                date.fromisoformat(str(row["archived_at"]))
+                if row["archived_at"] is not None
                 else None
             ),
         )
 
     @staticmethod
     def _habit_active_on_date(habit: Habit, day: date) -> bool:
-        return habit.start_date <= day and (habit.completed_at is None or habit.completed_at >= day)
+        return habit.start_date <= day and habit.archived_at is None
 
     def _status_for_habit_day(self, habit_id: int, day: date) -> str:
         row = self.connection.execute(
@@ -527,8 +770,8 @@ class HabitStore:
 
     def _streaks_for_habit(self, habit: Habit, today: date) -> list[HabitStreak]:
         end_date = today
-        if habit.completed_at is not None:
-            end_date = min(end_date, habit.completed_at)
+        if habit.archived_at is not None:
+            end_date = min(end_date, habit.archived_at)
         if end_date < habit.start_date:
             return []
 
@@ -593,7 +836,7 @@ class HabitStore:
 
     def past_pending_notifications(self, today: date | None = None) -> list[PendingNotification]:
         current_day = today if today is not None else date.today()
-        habits = self.list_habits()
+        habits = self.list_active_habits()
         if not habits:
             return []
 
@@ -621,11 +864,11 @@ class HabitStore:
             if habit.start_date > yesterday:
                 continue
             end_date = yesterday
-            if habit.completed_at is not None:
-                end_date = min(end_date, habit.completed_at)
             if end_date < habit.start_date:
                 continue
             for active_day in date_range(habit.start_date, end_date + timedelta(days=1)):
+                if not self.habit_active_on(habit.habit_id, active_day):
+                    continue
                 if (habit.habit_id, active_day) not in logged_dates:
                     pending_by_date[active_day] = pending_by_date.get(active_day, 0) + 1
 
@@ -775,7 +1018,7 @@ class CalendarApp:
     streaks_scroll: int = 0
     selected_stats_habit_id: int | None = None
     selected_stats_habit_name: str = ""
-    stats_include_completed: bool = False
+    stats_include_archived: bool = False
     selected_notes_habit_id: int | None = None
     selected_notes_habit_name: str = ""
     note_return_view: str = "main"
@@ -835,16 +1078,20 @@ class CalendarApp:
         self.view = "delete_habits"
         self.message = ""
 
+    def open_archive_habits(self) -> None:
+        self.view = "archive_habits"
+        self.message = ""
+
+    def open_archived_habits(self) -> None:
+        self.view = "archived_habits"
+        self.message = ""
+
     def open_rename_habits(self) -> None:
         self.view = "rename_habits"
         self.message = ""
 
-    def open_complete_habits(self) -> None:
-        self.view = "complete_habits"
-        self.message = ""
-
-    def open_complete_challenge_habits(self) -> None:
-        self.view = "complete_challenge_habits"
+    def open_challenge_mode(self) -> None:
+        self.view = "challenge_mode"
         self.message = ""
 
     def open_create_challenge(self) -> None:
@@ -880,15 +1127,15 @@ class CalendarApp:
 
     def open_stats(self) -> None:
         self.view = "stats"
-        self.stats_include_completed = False
+        self.stats_include_archived = False
         self.stats_scroll = 0
         self.message = ""
 
-    def set_stats_filter(self, include_completed: bool) -> None:
-        self.stats_include_completed = include_completed
+    def set_stats_filter(self, include_archived: bool) -> None:
+        self.stats_include_archived = include_archived
         self.stats_scroll = 0
         self.view = "stats"
-        self.message = "Showing all habits." if include_completed else "Showing active habits."
+        self.message = "Showing all habits." if include_archived else "Showing active habits."
 
     def open_habit_stats(self, habit_id: int, habit_name: str) -> None:
         self.selected_stats_habit_id = habit_id
@@ -946,7 +1193,7 @@ class CalendarApp:
         self.message = ""
 
     def scroll_stats(self, delta: int, page_size: int) -> None:
-        stats = self.store.habit_stats_list(self.stats_include_completed)
+        stats = self.store.habit_stats_list(self.stats_include_archived)
         max_scroll = max(0, len(stats) - max(1, page_size))
         self.stats_scroll = min(max_scroll, max(0, self.stats_scroll + delta))
         self.message = ""
@@ -1089,9 +1336,9 @@ class CalendarApp:
             self.view = "challenge_end_options"
         elif self.view in {"challenge_existing_habits", "challenge_end_options"}:
             self.view = "create_challenge"
-        elif self.view in {"complete_challenge_habits", "create_challenge"}:
-            self.view = "complete_habits"
-        elif self.view in {"rename_habits", "complete_habits", "delete_habits"}:
+        elif self.view == "create_challenge":
+            self.view = "challenge_mode"
+        elif self.view in {"rename_habits", "challenge_mode", "delete_habits", "archive_habits", "archived_habits"}:
             self.view = "manage_habits"
         elif self.view == "habit_notes":
             if self.selected_stats_habit_id is not None:
@@ -1202,22 +1449,30 @@ class CalendarApp:
             return
         self.message = f"Renamed '{habit_name}' to '{new_name}'."
 
-    def complete_habit(self, screen: "curses.window", habit_id: int, habit_name: str) -> None:
+    def archive_habit(self, screen: "curses.window", habit_id: int, habit_name: str) -> None:
         today = date.today()
         confirmation = self._prompt(
             screen,
-            f"Complete {self._truncate(habit_name, 18)} as of {today.isoformat()}? Y/N: ",
+            f"Type ARCHIVE to archive '{self._truncate(habit_name, 18)}': ",
         )
-        if confirmation is None or confirmation.strip().lower() not in {"y", "yes"}:
-            self.message = "Habit completion cancelled."
+        if confirmation != "ARCHIVE":
+            self.message = "Habit archive cancelled."
             return
 
         try:
-            self.store.complete_habit(habit_id, today)
+            self.store.archive_habit(habit_id, today)
         except ValueError as exc:
             self.message = str(exc)
             return
-        self.message = f"Completed {habit_name}. It will not appear after {today.isoformat()}."
+        self.message = f"Archived {habit_name}. Use Archived Habits to resurrect it."
+
+    def resurrect_habit(self, habit_id: int, habit_name: str) -> None:
+        try:
+            self.store.resurrect_habit(habit_id)
+        except ValueError as exc:
+            self.message = str(exc)
+            return
+        self.message = f"Resurrected {habit_name}."
 
     def clear_challenge_target(self) -> None:
         self.challenge_habit_id = None
@@ -1297,9 +1552,9 @@ class CalendarApp:
         try:
             if self.challenge_new_habit_name:
                 habit_id = self.store.create_habit(self.challenge_new_habit_name, date.today())
-                self.store.complete_habit(habit_id, end_date)
+                self.store.create_challenge(habit_id, date.today(), end_date)
             elif self.challenge_habit_id is not None:
-                self.store.complete_habit(self.challenge_habit_id, end_date)
+                self.store.create_challenge(self.challenge_habit_id, date.today(), end_date)
         except ValueError as exc:
             self.message = str(exc)
             return
@@ -1348,9 +1603,7 @@ class CalendarApp:
             elif hitbox.name == "manage_rename":
                 self.open_rename_habits()
             elif hitbox.name == "manage_challenge":
-                self.open_complete_habits()
-            elif hitbox.name == "challenge_complete":
-                self.open_complete_challenge_habits()
+                self.open_challenge_mode()
             elif hitbox.name == "challenge_create":
                 self.open_create_challenge()
             elif hitbox.name == "challenge_existing":
@@ -1366,15 +1619,22 @@ class CalendarApp:
                 self.start_challenge_end_date_pick()
             elif hitbox.name == "manage_delete":
                 self.open_delete_habits()
+            elif hitbox.name == "manage_archive":
+                self.open_archive_habits()
+            elif hitbox.name == "manage_archived":
+                self.open_archived_habits()
             elif hitbox.name == "delete_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
                 self.delete_habit(screen, int(habit_id), str(habit_name))
+            elif hitbox.name == "archive_habit" and hitbox.value is not None:
+                habit_id, habit_name = hitbox.value
+                self.archive_habit(screen, int(habit_id), str(habit_name))
+            elif hitbox.name == "resurrect_habit" and hitbox.value is not None:
+                habit_id, habit_name = hitbox.value
+                self.resurrect_habit(int(habit_id), str(habit_name))
             elif hitbox.name == "rename_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
                 self.rename_habit(screen, int(habit_id), str(habit_name))
-            elif hitbox.name == "complete_habit" and hitbox.value is not None:
-                habit_id, habit_name = hitbox.value
-                self.complete_habit(screen, int(habit_id), str(habit_name))
             elif hitbox.name == "day" and hitbox.value is not None:
                 self.select_day(int(hitbox.value))
             elif hitbox.name == "add_habit":
@@ -1410,10 +1670,12 @@ class CalendarApp:
             self._draw_delete_habits_page(screen)
         elif self.view == "rename_habits":
             self._draw_rename_habits_page(screen)
-        elif self.view == "complete_habits":
-            self._draw_complete_habits_page(screen)
-        elif self.view == "complete_challenge_habits":
-            self._draw_complete_challenge_habits_page(screen)
+        elif self.view == "archive_habits":
+            self._draw_archive_habits_page(screen)
+        elif self.view == "archived_habits":
+            self._draw_archived_habits_page(screen)
+        elif self.view == "challenge_mode":
+            self._draw_challenge_mode_page(screen)
         elif self.view == "create_challenge":
             self._draw_create_challenge_page(screen)
         elif self.view == "challenge_existing_habits":
@@ -1542,8 +1804,15 @@ class CalendarApp:
 
         for index, habit in enumerate(visible_habits):
             y = list_top + index * 3
-            streak = self.store.current_streak_for_habit(habit.habit_id, selected)
-            habit_label = f"{habit.name} ({streak})"
+            challenge_progress = self.store.challenge_progress_for_habit_day(habit.habit_id, selected)
+            if challenge_progress is not None:
+                habit_label = (
+                    f"{habit.name} "
+                    f"({challenge_progress.current_streak}/{challenge_progress.duration_days})"
+                )
+            else:
+                streak = self.store.current_streak_for_habit(habit.habit_id, selected)
+                habit_label = f"{habit.name} ({streak})"
             self._addstr(screen, y, DETAIL_LEFT, self._truncate(habit_label, 24), curses.A_BOLD)
 
             pending_label = "Pending"
@@ -1836,15 +2105,15 @@ class CalendarApp:
         visible_count = max(1, status_y - 5)
 
         back_label = "< Back"
-        title = "Stats" if not self.stats_include_completed else "Stats: All Habits"
+        title = "Stats" if not self.stats_include_archived else "Stats: All Habits"
         self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
         self._addstr(screen, 1, DETAIL_LEFT, title, self._color(1) | curses.A_BOLD)
         self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
 
-        stats = self.store.habit_stats_list(self.stats_include_completed)
+        stats = self.store.habit_stats_list(self.stats_include_archived)
         if not stats:
             self.stats_scroll = 0
-            empty = "No habits yet." if self.stats_include_completed else "No active habits."
+            empty = "No habits yet." if self.stats_include_archived else "No active habits."
             self._addstr(screen, 4, CALENDAR_LEFT, empty)
             self._draw_command_footer(screen, footer_y)
             self._draw_message(screen, message_y)
@@ -1923,10 +2192,10 @@ class CalendarApp:
         self.hitboxes.append(HitBox("stats_streak_history", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(history_label) - 1))
 
         self._addstr(screen, 10, CALENDAR_LEFT, f"Start date: {habit.start_date.isoformat()}")
-        if habit.completed_at is not None:
-            self._addstr(screen, 11, CALENDAR_LEFT, f"Completion date: {habit.completed_at.isoformat()}")
+        if habit.archived_at is not None:
+            self._addstr(screen, 11, CALENDAR_LEFT, f"Archive date: {habit.archived_at.isoformat()}")
 
-        notes_y = 13 if habit.completed_at is not None else 12
+        notes_y = 13 if habit.archived_at is not None else 12
         notes_label = f"Notes: {stats.note_count}"
         notes_style = curses.A_BOLD if stats.note_count else curses.A_DIM
         self._addstr(screen, notes_y, CALENDAR_LEFT, notes_label, notes_style)
@@ -2185,13 +2454,19 @@ class CalendarApp:
 
         rename_label = "Rename"
         challenge_label = "Challenge Mode"
+        archive_label = "Archive Habit"
+        archived_label = "Archived Habits"
         delete_label = "Delete [DANGER]"
         self._addstr(screen, 4, CALENDAR_LEFT, rename_label, curses.A_BOLD)
         self._addstr(screen, 6, CALENDAR_LEFT, challenge_label, curses.A_BOLD)
-        self._addstr(screen, 8, CALENDAR_LEFT, delete_label, self._danger_style())
+        self._addstr(screen, 8, CALENDAR_LEFT, archive_label, self._danger_style())
+        self._addstr(screen, 10, CALENDAR_LEFT, archived_label, curses.A_BOLD)
+        self._addstr(screen, 12, CALENDAR_LEFT, delete_label, self._danger_style())
         self.hitboxes.append(HitBox("manage_rename", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(rename_label) - 1))
         self.hitboxes.append(HitBox("manage_challenge", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(challenge_label) - 1))
-        self.hitboxes.append(HitBox("manage_delete", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(delete_label) - 1))
+        self.hitboxes.append(HitBox("manage_archive", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(archive_label) - 1))
+        self.hitboxes.append(HitBox("manage_archived", 10, CALENDAR_LEFT, CALENDAR_LEFT + len(archived_label) - 1))
+        self.hitboxes.append(HitBox("manage_delete", 12, CALENDAR_LEFT, CALENDAR_LEFT + len(delete_label) - 1))
         self._draw_message(screen, 16)
 
     def _draw_delete_habits_page(self, screen: "curses.window") -> None:
@@ -2250,48 +2525,83 @@ class CalendarApp:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
         self._draw_message(screen, 16)
 
-    def _draw_complete_habits_page(self, screen: "curses.window") -> None:
+    def _draw_archive_habits_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Archive Habit", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        habits = self.store.list_active_habits()
+        if not habits:
+            self._addstr(screen, 4, CALENDAR_LEFT, "No active habits to archive.")
+            self._draw_message(screen)
+            return
+
+        self._addstr(screen, 3, CALENDAR_LEFT, "Archive Habit", curses.A_BOLD)
+        self._addstr(screen, 4, CALENDAR_LEFT, "Archiving hides a habit from daily tracking without deleting history.")
+
+        for index, habit in enumerate(habits[:9]):
+            y = 6 + index
+            habit_label = f"{self._truncate(habit.name, 28)} ({habit.start_date.isoformat()})"
+            archive_label = "Archive"
+            archive_x = DETAIL_LEFT + 20
+            self._addstr(screen, y, CALENDAR_LEFT, habit_label)
+            self._addstr(screen, y, archive_x, archive_label, self._danger_style())
+            self.hitboxes.append(
+                HitBox("archive_habit", y, archive_x, archive_x + len(archive_label) - 1, (habit.habit_id, habit.name))
+            )
+
+        if len(habits) > 9:
+            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} active habits.")
+        self._draw_message(screen, 16)
+
+    def _draw_archived_habits_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Archived Habits", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        habits = self.store.list_archived_habits()
+        if not habits:
+            self._addstr(screen, 4, CALENDAR_LEFT, "No archived habits.")
+            self._draw_message(screen)
+            return
+
+        self._addstr(screen, 3, CALENDAR_LEFT, "Archived Habit", curses.A_BOLD)
+        self._addstr(screen, 4, CALENDAR_LEFT, "Choose Resurrect to return a habit to active tracking.")
+
+        for index, habit in enumerate(habits[:9]):
+            y = 6 + index
+            archived_at = habit.archived_at.isoformat() if habit.archived_at is not None else "unknown"
+            habit_label = f"{self._truncate(habit.name, 24)} ({archived_at})"
+            resurrect_label = "Resurrect"
+            resurrect_x = DETAIL_LEFT + 20
+            self._addstr(screen, y, CALENDAR_LEFT, habit_label)
+            self._addstr(screen, y, resurrect_x, resurrect_label, curses.A_BOLD)
+            self.hitboxes.append(
+                HitBox(
+                    "resurrect_habit",
+                    y,
+                    resurrect_x,
+                    resurrect_x + len(resurrect_label) - 1,
+                    (habit.habit_id, habit.name),
+                )
+            )
+
+        if len(habits) > 9:
+            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} archived habits.")
+        self._draw_message(screen, 16)
+
+    def _draw_challenge_mode_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
         self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
         self._addstr(screen, 1, DETAIL_LEFT, "Challenge Mode", self._color(1) | curses.A_BOLD)
         self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
 
-        complete_label = "Complete Habit"
         create_label = "Create Challenge"
-        self._addstr(screen, 4, CALENDAR_LEFT, complete_label, curses.A_BOLD)
-        self._addstr(screen, 6, CALENDAR_LEFT, create_label, curses.A_BOLD)
-        self.hitboxes.append(HitBox("challenge_complete", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(complete_label) - 1))
-        self.hitboxes.append(HitBox("challenge_create", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(create_label) - 1))
-        self._draw_message(screen, 16)
-
-    def _draw_complete_challenge_habits_page(self, screen: "curses.window") -> None:
-        back_label = "< Back"
-        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
-        self._addstr(screen, 1, DETAIL_LEFT, "Complete Habit", self._color(1) | curses.A_BOLD)
-        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
-
-        habits = self.store.list_habits()
-        if not habits:
-            self._addstr(screen, 4, CALENDAR_LEFT, "No habits to complete.")
-            self._draw_message(screen)
-            return
-
-        self._addstr(screen, 3, CALENDAR_LEFT, "Complete Habit", curses.A_BOLD)
-        self._addstr(screen, 4, CALENDAR_LEFT, "Completion archives the habit after today and keeps its history.")
-
-        for index, habit in enumerate(habits[:9]):
-            y = 6 + index
-            habit_label = f"{self._truncate(habit.name, 28)} ({habit.start_date.isoformat()})"
-            complete_label = "Complete"
-            complete_x = DETAIL_LEFT + 20
-            self._addstr(screen, y, CALENDAR_LEFT, habit_label)
-            self._addstr(screen, y, complete_x, complete_label, curses.A_BOLD)
-            self.hitboxes.append(
-                HitBox("complete_habit", y, complete_x, complete_x + len(complete_label) - 1, (habit.habit_id, habit.name))
-            )
-
-        if len(habits) > 9:
-            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
+        self._addstr(screen, 4, CALENDAR_LEFT, create_label, curses.A_BOLD)
+        self._addstr(screen, 6, CALENDAR_LEFT, "Challenges are goals; habits keep running after they end.")
+        self.hitboxes.append(HitBox("challenge_create", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(create_label) - 1))
         self._draw_message(screen, 16)
 
     def _draw_create_challenge_page(self, screen: "curses.window") -> None:

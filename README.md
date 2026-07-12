@@ -10,7 +10,8 @@ A small terminal habit tracker with a navigable monthly calendar. It lets you ad
 - Optional Textual prototype UI for a more structured terminal interface
 - Mouse support for selecting dates and controls
 - Daily habit creation from any selected date
-- Habit completion/archiving that stops future tracking without deleting history
+- Explicit habit archiving and resurrection without deleting history
+- Challenge goals that track progress without archiving the underlying habit
 - Per-day habit status tracking: `Pending`, `Done`, or `Missed`
 - Per-habit daily notes with a locked text editor
 - Hidden `/notes` browser for reviewing saved notes by habit
@@ -102,15 +103,16 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Press `h` to open help from the main screen
 - Use `/help` to list hidden commands
 - Use `/backup` to open backup tools, then choose `Create Backup` or `Manage Backups`
-- Use `/managehabit` to open habit management, then choose `Rename`, `Challenge Mode`, or `Delete [DANGER]`
+- Use `/managehabit` to open habit management, then choose `Rename`, `Challenge Mode`, `Archive Habit`, `Archived Habits`, or `Delete [DANGER]`
 - Use `/notes` to browse all habits with note counts, then open a habit's saved notes in reverse chronological order
-- Use `/stats` to browse habit streak stats; active habits are bold, and completed habits are plain when shown
-- Use `/viewall` on stats pages to include completed habits, or `/viewactive` to return to active habits only
-- In `Challenge Mode`, choose `Complete Habit` to archive a habit or `Create Challenge` to set an end date for a challenge
+- Use `/stats` to browse habit streak stats; active habits are bold, and archived habits are plain when shown
+- Use `/viewall` on stats pages to include archived habits, or `/viewactive` to return to active habits only
+- In `Challenge Mode`, choose `Create Challenge` to set an end date for a challenge
 - Create a challenge from an active existing habit or a new habit, then choose `Set Duration` or `Pick Ending Date`
 - `Pick Ending Date` opens a centered calendar picker and confirms both the challenge duration and end date
+- Choose `Archive Habit` to hide a habit from active tracking; type `ARCHIVE` to confirm
+- Choose `Archived Habits` to view archived habits and resurrect them
 - Type `DELETE` when prompted to confirm an irreversible habit deletion
-- Confirm Challenge Mode completion with `Y` or cancel with `N`
 - Use `/quit` to quit from the command prompt
 - Press left/right arrows to move between months
 - Press `t` to jump to today
@@ -124,13 +126,15 @@ When a habit is created, it becomes active starting on the selected date.
 
 If the selected start date is before today, the app automatically marks every day from the start date through yesterday as `Done`. Today remains `Pending`.
 
-Completed habits and challenges:
+Archived habits and challenges:
 
-- Completing a habit archives it as of today
+- Archiving a habit hides it from active daily tracking without deleting its history
+- Archiving only happens when explicitly chosen from `/managehabit`; it never happens automatically
+- Archived habits can be resurrected from `/managehabit` > `Archived Habits`
 - Creating a challenge sets an ending date for an active habit or a newly created habit
 - Challenge duration is inclusive: a 90-day challenge created today ends 89 days from today
-- The habit remains visible on historical dates from its active range, including the completion or challenge end date
-- Dates after completion or challenge end do not show the habit as active or pending
+- Challenge completion means the goal has been met; the underlying habit keeps running
+- Dates after a challenge end keep showing the habit as active unless the habit is explicitly archived
 - Saved history is preserved for future export or charting
 
 For active habits:
@@ -139,6 +143,7 @@ For active habits:
 - Explicit `Done` or `Missed` choices are saved for that specific date
 - Choosing `Pending` clears the saved status for that habit and date
 - The main page shows the current streak beside each habit name, calculated through the selected date
+- Habits with an active challenge show challenge progress as `current/duration`, such as `meditation (3/30)`
 
 Notifications:
 
@@ -153,10 +158,10 @@ Habit stats:
 - `/stats` lists active habits with the current streak count beside each habit
 - Current streaks count consecutive explicit `Done` days; `Missed` and historical `Pending` days break streaks
 - If today is still `Pending`, the current streak is counted through yesterday; if today is `Done`, today is included
-- Clicking a habit opens current streak, longest streak, streak history, start date, completion date when present, and note count
+- Clicking a habit opens current streak, longest streak, streak history, start date, archive date when present, and note count
 - Clicking `Streak History` shows all streaks from longest to shortest with their start and end dates
 - Clicking `Notes` opens that habit's saved notes when notes exist
-- `/viewall` includes completed habits in the stats list; active habits are bold and completed habits are plain
+- `/viewall` includes archived habits in the stats list; active habits are bold and archived habits are plain
 
 Daily notes:
 
