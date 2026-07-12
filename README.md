@@ -103,15 +103,15 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Press `h` to open help from the main screen
 - Use `/help` to list hidden commands
 - Use `/backup` to open backup tools, then choose `Create Backup` or `Manage Backups`
-- Use `/managehabit` to open habit management, then choose `Rename`, `Challenge Mode`, `Archive Habit`, `Archived Habits`, or `Delete [DANGER]`
+- Use `/managehabit` to open habit management, then choose `Rename`, `Challenge Mode`, `View Archive`, `Archived Habits`, or `Delete [DANGER]`
 - Use `/notes` to browse all habits with note counts, then open a habit's saved notes in reverse chronological order
 - Use `/stats` to browse habit streak stats; active habits are bold, and archived habits are plain when shown
 - Use `/viewall` on stats pages to include archived habits, or `/viewactive` to return to active habits only
 - In `Challenge Mode`, choose `Create Challenge` to set an end date for a challenge
 - Create a challenge from an active existing habit or a new habit, then choose `Set Duration` or `Pick Ending Date`
 - `Pick Ending Date` opens a centered calendar picker and confirms both the challenge duration and end date
-- Choose `Archive Habit` to hide a habit from active tracking; type `ARCHIVE` to confirm
-- Choose `Archived Habits` to view archived habits and resurrect them
+- Choose `Archived Habits` to hide a habit from active tracking; type `ARCHIVE` to confirm
+- Choose `View Archive` to view archived habits and resurrect them
 - Type `DELETE` when prompted to confirm an irreversible habit deletion
 - Use `/quit` to quit from the command prompt
 - Press left/right arrows to move between months
@@ -130,7 +130,7 @@ Archived habits and challenges:
 
 - Archiving a habit hides it from active daily tracking without deleting its history
 - Archiving only happens when explicitly chosen from `/managehabit`; it never happens automatically
-- Archived habits can be resurrected from `/managehabit` > `Archived Habits`
+- Archived habits can be resurrected from `/managehabit` > `View Archive`
 - Creating a challenge sets an ending date for an active habit or a newly created habit
 - Challenge duration is inclusive: a 90-day challenge created today ends 89 days from today
 - Challenge completion means the goal has been met; the underlying habit keeps running

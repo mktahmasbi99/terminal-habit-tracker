@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 - Added a separate challenge table so challenge goals no longer archive habits automatically.
 - Added challenge progress labels on the main page, such as `meditation (3/30)`.
 - Added database support for nullable habit archive dates while preserving historical logs.
-- Added a `/managehabit` page with `Rename`, `Challenge Mode`, `Archive Habit`, `Archived Habits`, and `Delete [DANGER]` actions.
+- Added a `/managehabit` page with `Rename`, `Challenge Mode`, `View Archive`, `Archived Habits`, and `Delete [DANGER]` actions.
 - Added `Create Challenge` under `Challenge Mode`.
 - Added challenge creation from an active existing habit or a new habit with either a duration or calendar-picked ending date.
 - Added a dedicated centered calendar picker for challenge ending dates.

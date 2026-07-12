@@ -1464,7 +1464,7 @@ class CalendarApp:
         except ValueError as exc:
             self.message = str(exc)
             return
-        self.message = f"Archived {habit_name}. Use Archived Habits to resurrect it."
+        self.message = f"Archived {habit_name}. Use View Archive to resurrect it."
 
     def resurrect_habit(self, habit_id: int, habit_name: str) -> None:
         try:
@@ -2454,18 +2454,18 @@ class CalendarApp:
 
         rename_label = "Rename"
         challenge_label = "Challenge Mode"
-        archive_label = "Archive Habit"
-        archived_label = "Archived Habits"
+        archived_label = "View Archive"
+        archive_label = "Archived Habits"
         delete_label = "Delete [DANGER]"
         self._addstr(screen, 4, CALENDAR_LEFT, rename_label, curses.A_BOLD)
         self._addstr(screen, 6, CALENDAR_LEFT, challenge_label, curses.A_BOLD)
-        self._addstr(screen, 8, CALENDAR_LEFT, archive_label, self._danger_style())
-        self._addstr(screen, 10, CALENDAR_LEFT, archived_label, curses.A_BOLD)
+        self._addstr(screen, 8, CALENDAR_LEFT, archived_label, curses.A_BOLD)
+        self._addstr(screen, 10, CALENDAR_LEFT, archive_label, self._danger_style())
         self._addstr(screen, 12, CALENDAR_LEFT, delete_label, self._danger_style())
         self.hitboxes.append(HitBox("manage_rename", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(rename_label) - 1))
         self.hitboxes.append(HitBox("manage_challenge", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(challenge_label) - 1))
-        self.hitboxes.append(HitBox("manage_archive", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(archive_label) - 1))
-        self.hitboxes.append(HitBox("manage_archived", 10, CALENDAR_LEFT, CALENDAR_LEFT + len(archived_label) - 1))
+        self.hitboxes.append(HitBox("manage_archived", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(archived_label) - 1))
+        self.hitboxes.append(HitBox("manage_archive", 10, CALENDAR_LEFT, CALENDAR_LEFT + len(archive_label) - 1))
         self.hitboxes.append(HitBox("manage_delete", 12, CALENDAR_LEFT, CALENDAR_LEFT + len(delete_label) - 1))
         self._draw_message(screen, 16)
 
