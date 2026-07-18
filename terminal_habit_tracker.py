@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
+__version__ = "0.1.0"
+
 WEEKDAY_NAMES = ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
 CELL_WIDTH = 4
 CALENDAR_LEFT = 4
@@ -2136,6 +2138,7 @@ class CalendarApp:
         back_label = "< Back"
         self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
         self._addstr(screen, 1, DETAIL_LEFT, "Commands", self._color(1) | curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT + 10, f"v{__version__}")
         self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
 
         for index, (command, description) in enumerate(COMMANDS):
@@ -3576,6 +3579,11 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Open an interactive daily habit tracker with a monthly calendar."
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "-m",

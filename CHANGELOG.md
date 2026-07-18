@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.0 - 2026-07-18
+
 ### Added
 - Added an optional Textual prototype UI for the main habit tracking workflow.
 - Added current streak counts beside habit names on the main page.
