@@ -127,6 +127,13 @@ class HabitStats:
 
 
 @dataclass(frozen=True)
+class HabitActivePeriod:
+    period_number: int
+    start_date: date
+    end_date: date
+
+
+@dataclass(frozen=True)
 class PendingNotification:
     day: date
     pending_count: int
@@ -721,6 +728,103 @@ class HabitStore:
             active_today=active_today,
         )
 
+    def active_periods_for_habit(self, habit_id: int) -> list[HabitActivePeriod]:
+        """Reconstructs closed active stretches from habit_archive_periods.
+
+        Only returns stretches that have already ended (bounded by an
+        archived_at date); it never includes a still-open current stretch,
+        since callers only need this for habits that are currently archived
+        (where the trailing archive_periods row is guaranteed to exist and
+        be unresurrected).
+        """
+        habit = self._get_habit(habit_id)
+        rows = self.connection.execute(
+            """
+            SELECT archived_at, resurrected_at
+            FROM habit_archive_periods
+            WHERE habit_id = ?
+            ORDER BY archived_at ASC, id ASC
+            """,
+            (habit_id,),
+        ).fetchall()
+
+        periods: list[HabitActivePeriod] = []
+        stretch_start = habit.start_date
+        for index, row in enumerate(rows, start=1):
+            archived_at = date.fromisoformat(str(row["archived_at"]))
+            periods.append(
+                HabitActivePeriod(period_number=index, start_date=stretch_start, end_date=archived_at)
+            )
+            resurrected_at = row["resurrected_at"]
+            if resurrected_at is None:
+                break
+            stretch_start = date.fromisoformat(str(resurrected_at))
+        return periods
+
+    def note_count_for_habit_in_range(self, habit_id: int, start_date: date, end_date: date) -> int:
+        row = self.connection.execute(
+            """
+            SELECT COUNT(*) AS note_count
+            FROM habit_notes
+            WHERE habit_id = ?
+                AND note_date >= ?
+                AND note_date <= ?
+            """,
+            (habit_id, start_date.isoformat(), end_date.isoformat()),
+        ).fetchone()
+        return int(row["note_count"]) if row is not None else 0
+
+    def notes_for_habit_in_range(self, habit_id: int, start_date: date, end_date: date) -> list[HabitNoteRef]:
+        rows = self.connection.execute(
+            """
+            SELECT habits.id, habits.name, habit_notes.note_date
+            FROM habit_notes
+            JOIN habits
+                ON habits.id = habit_notes.habit_id
+            WHERE habits.id = ?
+                AND habit_notes.note_date >= ?
+                AND habit_notes.note_date <= ?
+            ORDER BY habit_notes.note_date DESC
+            """,
+            (habit_id, start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+        return [
+            HabitNoteRef(
+                habit_id=int(row["id"]),
+                habit_name=str(row["name"]),
+                note_date=date.fromisoformat(str(row["note_date"])),
+            )
+            for row in rows
+        ]
+
+    def habit_stats_for_period(self, habit_id: int, period_start: date, period_end: date) -> HabitStats:
+        habit = self._get_habit(habit_id)
+        scoped_habit = Habit(
+            habit_id=habit.habit_id,
+            name=habit.name,
+            start_date=period_start,
+            archived_at=period_end,
+        )
+        streaks = self._streaks_for_habit(scoped_habit, period_end)
+        longest_streak = streaks[0] if streaks else None
+
+        current_streak = 0
+        if streaks:
+            day_status = self._status_for_habit_day(habit_id, period_end)
+            current_end = period_end if day_status == STATUS_DONE else period_end - timedelta(days=1)
+            latest_streak = max(streaks, key=lambda streak: streak.end_date)
+            if latest_streak.end_date == current_end:
+                current_streak = latest_streak.length
+
+        return HabitStats(
+            habit=scoped_habit,
+            current_streak=current_streak,
+            longest_streak=longest_streak,
+            streaks=streaks,
+            note_count=self.note_count_for_habit_in_range(habit_id, period_start, period_end),
+            active_today=False,
+        )
+
     def current_streak_for_habit(self, habit_id: int, through_day: date) -> int:
         habit = self._get_habit(habit_id)
         if not self._habit_active_on_date(habit, through_day):
@@ -1022,6 +1126,11 @@ class CalendarApp:
     selected_notes_habit_id: int | None = None
     selected_notes_habit_name: str = ""
     note_return_view: str = "main"
+    selected_period_habit_id: int | None = None
+    selected_period_habit_name: str = ""
+    selected_period_number: int | None = None
+    selected_period_start: date | None = None
+    selected_period_end: date | None = None
     challenge_habit_id: int | None = None
     challenge_habit_name: str = ""
     challenge_new_habit_name: str = ""
@@ -1078,12 +1187,45 @@ class CalendarApp:
         self.view = "delete_habits"
         self.message = ""
 
+    def open_archive_mode(self) -> None:
+        self.view = "archive_mode"
+        self.message = ""
+
     def open_archive_habits(self) -> None:
         self.view = "archive_habits"
         self.message = ""
 
     def open_archived_habits(self) -> None:
         self.view = "archived_habits"
+        self.message = ""
+
+    def open_archive_period_list(self, habit_id: int, habit_name: str) -> None:
+        self.selected_period_habit_id = habit_id
+        self.selected_period_habit_name = habit_name
+        self.view = "archive_period_list"
+        self.message = ""
+
+    def open_archive_period_stats(self, period_number: int, start_date: date, end_date: date) -> None:
+        self.selected_period_number = period_number
+        self.selected_period_start = start_date
+        self.selected_period_end = end_date
+        self.view = "archive_period_stats"
+        self.message = ""
+
+    def open_archive_period_streak_history(self) -> None:
+        if self.selected_period_start is None or self.selected_period_end is None:
+            self.message = "No archive period selected."
+            return
+        self.streaks_scroll = 0
+        self.view = "archive_period_streak_history"
+        self.message = ""
+
+    def open_archive_period_notes(self) -> None:
+        if self.selected_period_start is None or self.selected_period_end is None:
+            self.message = "No archive period selected."
+            return
+        self.habit_notes_scroll = 0
+        self.view = "archive_period_notes"
         self.message = ""
 
     def open_rename_habits(self) -> None:
@@ -1338,7 +1480,15 @@ class CalendarApp:
             self.view = "create_challenge"
         elif self.view == "create_challenge":
             self.view = "challenge_mode"
-        elif self.view in {"rename_habits", "challenge_mode", "delete_habits", "archive_habits", "archived_habits"}:
+        elif self.view in {"archive_period_streak_history", "archive_period_notes"}:
+            self.view = "archive_period_stats"
+        elif self.view == "archive_period_stats":
+            self.view = "archive_period_list"
+        elif self.view == "archive_period_list":
+            self.view = "archived_habits"
+        elif self.view in {"archive_habits", "archived_habits"}:
+            self.view = "archive_mode"
+        elif self.view in {"rename_habits", "challenge_mode", "delete_habits", "archive_mode"}:
             self.view = "manage_habits"
         elif self.view == "habit_notes":
             if self.selected_stats_habit_id is not None:
@@ -1449,16 +1599,8 @@ class CalendarApp:
             return
         self.message = f"Renamed '{habit_name}' to '{new_name}'."
 
-    def archive_habit(self, screen: "curses.window", habit_id: int, habit_name: str) -> None:
+    def archive_habit(self, habit_id: int, habit_name: str) -> None:
         today = date.today()
-        confirmation = self._prompt(
-            screen,
-            f"Type ARCHIVE to archive '{self._truncate(habit_name, 18)}': ",
-        )
-        if confirmation != "ARCHIVE":
-            self.message = "Habit archive cancelled."
-            return
-
         try:
             self.store.archive_habit(habit_id, today)
         except ValueError as exc:
@@ -1619,19 +1761,38 @@ class CalendarApp:
                 self.start_challenge_end_date_pick()
             elif hitbox.name == "manage_delete":
                 self.open_delete_habits()
-            elif hitbox.name == "manage_archive":
-                self.open_archive_habits()
-            elif hitbox.name == "manage_archived":
+            elif hitbox.name == "manage_archive_mode":
+                self.open_archive_mode()
+            elif hitbox.name == "archive_mode_view":
                 self.open_archived_habits()
+            elif hitbox.name == "archive_mode_archive":
+                self.open_archive_habits()
             elif hitbox.name == "delete_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
                 self.delete_habit(screen, int(habit_id), str(habit_name))
             elif hitbox.name == "archive_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
-                self.archive_habit(screen, int(habit_id), str(habit_name))
+                self.archive_habit(int(habit_id), str(habit_name))
             elif hitbox.name == "resurrect_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
                 self.resurrect_habit(int(habit_id), str(habit_name))
+            elif hitbox.name == "archived_habit_stats" and hitbox.value is not None:
+                habit_id, habit_name = hitbox.value
+                self.open_archive_period_list(int(habit_id), str(habit_name))
+            elif hitbox.name == "archive_period_row" and hitbox.value is not None:
+                period_number, start_iso, end_iso = hitbox.value
+                self.open_archive_period_stats(
+                    int(period_number),
+                    date.fromisoformat(str(start_iso)),
+                    date.fromisoformat(str(end_iso)),
+                )
+            elif hitbox.name == "archive_period_streak_history_link":
+                self.open_archive_period_streak_history()
+            elif hitbox.name == "archive_period_notes_link":
+                self.open_archive_period_notes()
+            elif hitbox.name == "archive_period_note" and hitbox.value is not None:
+                habit_id, habit_name, note_date = hitbox.value
+                self.open_note_editor(int(habit_id), str(habit_name), note_date, "archive_period_notes")
             elif hitbox.name == "rename_habit" and hitbox.value is not None:
                 habit_id, habit_name = hitbox.value
                 self.rename_habit(screen, int(habit_id), str(habit_name))
@@ -1670,10 +1831,20 @@ class CalendarApp:
             self._draw_delete_habits_page(screen)
         elif self.view == "rename_habits":
             self._draw_rename_habits_page(screen)
+        elif self.view == "archive_mode":
+            self._draw_archive_mode_page(screen)
         elif self.view == "archive_habits":
             self._draw_archive_habits_page(screen)
         elif self.view == "archived_habits":
             self._draw_archived_habits_page(screen)
+        elif self.view == "archive_period_list":
+            self._draw_archive_period_list_page(screen)
+        elif self.view == "archive_period_stats":
+            self._draw_archive_period_stats_page(screen)
+        elif self.view == "archive_period_streak_history":
+            self._draw_archive_period_streak_history_page(screen)
+        elif self.view == "archive_period_notes":
+            self._draw_archive_period_notes_page(screen)
         elif self.view == "challenge_mode":
             self._draw_challenge_mode_page(screen)
         elif self.view == "create_challenge":
@@ -2454,19 +2625,30 @@ class CalendarApp:
 
         rename_label = "Rename"
         challenge_label = "Challenge Mode"
-        archived_label = "View Archive"
-        archive_label = "Archived Habits"
+        archive_label = "Archive"
         delete_label = "Delete [DANGER]"
         self._addstr(screen, 4, CALENDAR_LEFT, rename_label, curses.A_BOLD)
         self._addstr(screen, 6, CALENDAR_LEFT, challenge_label, curses.A_BOLD)
-        self._addstr(screen, 8, CALENDAR_LEFT, archived_label, curses.A_BOLD)
-        self._addstr(screen, 10, CALENDAR_LEFT, archive_label, self._danger_style())
-        self._addstr(screen, 12, CALENDAR_LEFT, delete_label, self._danger_style())
+        self._addstr(screen, 8, CALENDAR_LEFT, archive_label, curses.A_BOLD)
+        self._addstr(screen, 10, CALENDAR_LEFT, delete_label, self._danger_style())
         self.hitboxes.append(HitBox("manage_rename", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(rename_label) - 1))
         self.hitboxes.append(HitBox("manage_challenge", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(challenge_label) - 1))
-        self.hitboxes.append(HitBox("manage_archived", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(archived_label) - 1))
-        self.hitboxes.append(HitBox("manage_archive", 10, CALENDAR_LEFT, CALENDAR_LEFT + len(archive_label) - 1))
-        self.hitboxes.append(HitBox("manage_delete", 12, CALENDAR_LEFT, CALENDAR_LEFT + len(delete_label) - 1))
+        self.hitboxes.append(HitBox("manage_archive_mode", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(archive_label) - 1))
+        self.hitboxes.append(HitBox("manage_delete", 10, CALENDAR_LEFT, CALENDAR_LEFT + len(delete_label) - 1))
+        self._draw_message(screen, 16)
+
+    def _draw_archive_mode_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Archive", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        view_label = "View Archive"
+        archive_label = "Archive Habit"
+        self._addstr(screen, 4, CALENDAR_LEFT, view_label, curses.A_BOLD)
+        self._addstr(screen, 6, CALENDAR_LEFT, archive_label, curses.A_BOLD)
+        self.hitboxes.append(HitBox("archive_mode_view", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(view_label) - 1))
+        self.hitboxes.append(HitBox("archive_mode_archive", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(archive_label) - 1))
         self._draw_message(screen, 16)
 
     def _draw_delete_habits_page(self, screen: "curses.window") -> None:
@@ -2538,7 +2720,7 @@ class CalendarApp:
             return
 
         self._addstr(screen, 3, CALENDAR_LEFT, "Archive Habit", curses.A_BOLD)
-        self._addstr(screen, 4, CALENDAR_LEFT, "Archiving hides a habit from daily tracking without deleting history.")
+        self._addstr(screen, 4, CALENDAR_LEFT, "Note: Archived habits will not appear in your daily tasks anymore.")
 
         for index, habit in enumerate(habits[:9]):
             y = 6 + index
@@ -2546,7 +2728,7 @@ class CalendarApp:
             archive_label = "Archive"
             archive_x = DETAIL_LEFT + 20
             self._addstr(screen, y, CALENDAR_LEFT, habit_label)
-            self._addstr(screen, y, archive_x, archive_label, self._danger_style())
+            self._addstr(screen, y, archive_x, archive_label, curses.A_BOLD)
             self.hitboxes.append(
                 HitBox("archive_habit", y, archive_x, archive_x + len(archive_label) - 1, (habit.habit_id, habit.name))
             )
@@ -2572,12 +2754,21 @@ class CalendarApp:
 
         for index, habit in enumerate(habits[:9]):
             y = 6 + index
-            archived_at = habit.archived_at.isoformat() if habit.archived_at is not None else "unknown"
-            habit_label = f"{self._truncate(habit.name, 24)} ({archived_at})"
+            periods = self.store.active_periods_for_habit(habit.habit_id)
+            if periods:
+                latest = periods[-1]
+                date_range = f"{latest.start_date.isoformat()}-{latest.end_date.isoformat()}"
+            else:
+                archived_at = habit.archived_at.isoformat() if habit.archived_at is not None else "unknown"
+                date_range = archived_at
+            habit_label = f"{self._truncate(habit.name, 24)} ({date_range})"
             resurrect_label = "Resurrect"
+            stats_label = "Stats"
             resurrect_x = DETAIL_LEFT + 20
+            stats_x = resurrect_x + len(resurrect_label) + 3
             self._addstr(screen, y, CALENDAR_LEFT, habit_label)
             self._addstr(screen, y, resurrect_x, resurrect_label, curses.A_BOLD)
+            self._addstr(screen, y, stats_x, stats_label, curses.A_BOLD)
             self.hitboxes.append(
                 HitBox(
                     "resurrect_habit",
@@ -2587,10 +2778,227 @@ class CalendarApp:
                     (habit.habit_id, habit.name),
                 )
             )
+            self.hitboxes.append(
+                HitBox(
+                    "archived_habit_stats",
+                    y,
+                    stats_x,
+                    stats_x + len(stats_label) - 1,
+                    (habit.habit_id, habit.name),
+                )
+            )
 
         if len(habits) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} archived habits.")
         self._draw_message(screen, 16)
+
+    def _draw_archive_period_list_page(self, screen: "curses.window") -> None:
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Archive History", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        if self.selected_period_habit_id is None:
+            self._addstr(screen, 4, CALENDAR_LEFT, "No habit selected.")
+            self._draw_message(screen)
+            return
+
+        self._addstr(screen, 3, CALENDAR_LEFT, self._truncate(self.selected_period_habit_name, 42), curses.A_BOLD)
+
+        periods = self.store.active_periods_for_habit(self.selected_period_habit_id)
+        if not periods:
+            self._addstr(screen, 5, CALENDAR_LEFT, "No archive history yet.")
+            self._draw_message(screen)
+            return
+
+        ordered = list(reversed(periods))
+        for index, period in enumerate(ordered[:9]):
+            y = 5 + index
+            row_label = (
+                f"{period.period_number}) {self._truncate(self.selected_period_habit_name, 24)} "
+                f"({period.start_date.isoformat()}-{period.end_date.isoformat()})"
+            )
+            self._addstr(screen, y, CALENDAR_LEFT, row_label)
+            self.hitboxes.append(
+                HitBox(
+                    "archive_period_row",
+                    y,
+                    CALENDAR_LEFT,
+                    CALENDAR_LEFT + len(row_label) - 1,
+                    (period.period_number, period.start_date.isoformat(), period.end_date.isoformat()),
+                )
+            )
+
+        if len(ordered) > 9:
+            self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(ordered)} archive periods.")
+        self._draw_message(screen, 16)
+
+    def _draw_archive_period_stats_page(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
+        footer_y = max(4, height - 2)
+        message_y = max(4, height - 1)
+
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Archive Stats", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        if (
+            self.selected_period_habit_id is None
+            or self.selected_period_number is None
+            or self.selected_period_start is None
+            or self.selected_period_end is None
+        ):
+            self._addstr(screen, 4, CALENDAR_LEFT, "No archive period selected.")
+            self._draw_command_footer(screen, footer_y)
+            self._draw_message(screen, message_y)
+            return
+
+        stats = self.store.habit_stats_for_period(
+            self.selected_period_habit_id, self.selected_period_start, self.selected_period_end
+        )
+
+        title = f"{self.selected_period_number}) {self._truncate(self.selected_period_habit_name, 40)}"
+        self._addstr(screen, 3, CALENDAR_LEFT, title, curses.A_BOLD)
+        self._addstr(screen, 5, CALENDAR_LEFT, f"Current streak: {stats.current_streak} {self._day_word(stats.current_streak)}")
+
+        if stats.longest_streak is None:
+            longest_label = "Longest streak: 0 days"
+        else:
+            longest_label = (
+                f"Longest streak: {stats.longest_streak.length} {self._day_word(stats.longest_streak.length)} "
+                f"({stats.longest_streak.start_date.isoformat()} to {stats.longest_streak.end_date.isoformat()})"
+            )
+        self._addstr(screen, 6, CALENDAR_LEFT, self._truncate(longest_label, 70))
+
+        history_label = f"Streak History: {len(stats.streaks)}"
+        self._addstr(screen, 8, CALENDAR_LEFT, history_label, curses.A_BOLD)
+        self.hitboxes.append(
+            HitBox("archive_period_streak_history_link", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(history_label) - 1)
+        )
+
+        self._addstr(screen, 10, CALENDAR_LEFT, f"Period start: {self.selected_period_start.isoformat()}")
+        self._addstr(screen, 11, CALENDAR_LEFT, f"Period end: {self.selected_period_end.isoformat()}")
+
+        notes_label = f"Notes: {stats.note_count}"
+        notes_style = curses.A_BOLD if stats.note_count else curses.A_DIM
+        self._addstr(screen, 13, CALENDAR_LEFT, notes_label, notes_style)
+        self.hitboxes.append(
+            HitBox("archive_period_notes_link", 13, CALENDAR_LEFT, CALENDAR_LEFT + len(notes_label) - 1)
+        )
+
+        self._draw_command_footer(screen, footer_y)
+        self._draw_message(screen, message_y)
+
+    def _draw_archive_period_streak_history_page(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
+        status_y = max(4, height - 3)
+        footer_y = max(4, height - 2)
+        message_y = max(4, height - 1)
+        visible_count = max(1, status_y - 5)
+
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Streak History", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+
+        if (
+            self.selected_period_habit_id is None
+            or self.selected_period_start is None
+            or self.selected_period_end is None
+        ):
+            self.streaks_scroll = 0
+            self._addstr(screen, 4, CALENDAR_LEFT, "No archive period selected.")
+            self._draw_command_footer(screen, footer_y)
+            self._draw_message(screen, message_y)
+            return
+
+        stats = self.store.habit_stats_for_period(
+            self.selected_period_habit_id, self.selected_period_start, self.selected_period_end
+        )
+        title = f"{self.selected_period_number}) {self._truncate(self.selected_period_habit_name, 40)}"
+        self._addstr(screen, 3, CALENDAR_LEFT, title, curses.A_BOLD)
+        self._addstr(screen, 4, CALENDAR_LEFT, "Length", curses.A_BOLD)
+        self._addstr(screen, 4, DETAIL_LEFT, "Dates", curses.A_BOLD)
+
+        if not stats.streaks:
+            self.streaks_scroll = 0
+            self._addstr(screen, 6, CALENDAR_LEFT, "No done streaks yet.")
+            self._draw_command_footer(screen, footer_y)
+            self._draw_message(screen, message_y)
+            return
+
+        max_scroll = max(0, len(stats.streaks) - visible_count)
+        self.streaks_scroll = min(self.streaks_scroll, max_scroll)
+        visible_streaks = stats.streaks[self.streaks_scroll : self.streaks_scroll + visible_count]
+        for index, streak in enumerate(visible_streaks):
+            y = 6 + index
+            length_label = f"{streak.length} {self._day_word(streak.length)}"
+            date_label = f"{streak.start_date.isoformat()} to {streak.end_date.isoformat()}"
+            self._addstr(screen, y, CALENDAR_LEFT, length_label)
+            self._addstr(screen, y, DETAIL_LEFT, date_label)
+
+        if len(stats.streaks) > visible_count:
+            first = self.streaks_scroll + 1
+            last = self.streaks_scroll + len(visible_streaks)
+            self._addstr(screen, status_y, CALENDAR_LEFT, f"Showing {first}-{last} of {len(stats.streaks)}. Up/Down scroll.")
+        self._draw_command_footer(screen, footer_y)
+        self._draw_message(screen, message_y)
+
+    def _draw_archive_period_notes_page(self, screen: "curses.window") -> None:
+        height, _ = screen.getmaxyx()
+        status_y = max(4, height - 2)
+        message_y = max(4, height - 1)
+        visible_count = max(1, status_y - 4)
+
+        back_label = "< Back"
+        self._addstr(screen, 1, CALENDAR_LEFT, back_label, curses.A_BOLD)
+        self._addstr(screen, 1, DETAIL_LEFT, "Archive Notes", self._color(1) | curses.A_BOLD)
+        self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
+        self._addstr(screen, 3, CALENDAR_LEFT, self._truncate(self.selected_period_habit_name, 42), curses.A_BOLD)
+
+        if (
+            self.selected_period_habit_id is None
+            or self.selected_period_start is None
+            or self.selected_period_end is None
+        ):
+            self.habit_notes_scroll = 0
+            self._addstr(screen, 5, CALENDAR_LEFT, "No archive period selected.")
+            self._draw_message(screen, message_y)
+            return
+
+        notes = self.store.notes_for_habit_in_range(
+            self.selected_period_habit_id, self.selected_period_start, self.selected_period_end
+        )
+        if not notes:
+            self.habit_notes_scroll = 0
+            self._addstr(screen, 5, CALENDAR_LEFT, "No notes exist for this archive period.")
+            self._draw_message(screen, message_y)
+            return
+
+        max_scroll = max(0, len(notes) - visible_count)
+        self.habit_notes_scroll = min(self.habit_notes_scroll, max_scroll)
+        visible_notes = notes[self.habit_notes_scroll : self.habit_notes_scroll + visible_count]
+
+        for index, note in enumerate(visible_notes):
+            y = 5 + index
+            label = note_title_for(note.habit_name, note.note_date)
+            self._addstr(screen, y, CALENDAR_LEFT, self._truncate(label, 70), curses.A_BOLD)
+            self.hitboxes.append(
+                HitBox(
+                    "archive_period_note",
+                    y,
+                    CALENDAR_LEFT,
+                    CALENDAR_LEFT + min(len(label), 70) - 1,
+                    (note.habit_id, note.habit_name, note.note_date),
+                )
+            )
+
+        if len(notes) > visible_count:
+            first = self.habit_notes_scroll + 1
+            last = self.habit_notes_scroll + len(visible_notes)
+            self._addstr(screen, status_y, CALENDAR_LEFT, f"Showing {first}-{last} of {len(notes)}. Up/Down scroll.")
+        self._draw_message(screen, message_y)
 
     def _draw_challenge_mode_page(self, screen: "curses.window") -> None:
         back_label = "< Back"

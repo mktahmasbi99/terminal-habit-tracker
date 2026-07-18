@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 - Added a separate challenge table so challenge goals no longer archive habits automatically.
 - Added challenge progress labels on the main page, such as `meditation (3/30)`.
 - Added database support for nullable habit archive dates while preserving historical logs.
-- Added a `/managehabit` page with `Rename`, `Challenge Mode`, `View Archive`, `Archived Habits`, and `Delete [DANGER]` actions.
+- Added a `/managehabit` page with `Rename`, `Challenge Mode`, `Archive`, and `Delete [DANGER]` actions.
 - Added `Create Challenge` under `Challenge Mode`.
 - Added challenge creation from an active existing habit or a new habit with either a duration or calendar-picked ending date.
 - Added a dedicated centered calendar picker for challenge ending dates.
@@ -23,11 +23,18 @@ All notable changes to this project will be documented in this file.
 - Wrapped long note lines inside the editor and moved saved-note highlighting off yellow.
 - Added locked-mode note navigation shortcuts for `^`, `$`, and `w`.
 - Changed note editing entry from `e` to Vim-style `i` insert mode.
+- Added a `Stats` button on `View Archive` showing every active stretch a
+  habit has had (numbered, most recent first), each with its own current
+  streak, longest streak, streak history, and note count scoped to that
+  stretch's dates.
 
 ### Changed
 - Documented archive, resurrection, challenge progress, and habit management behavior in the README.
 - Replaced direct `/delhabit`, `/renamehabit`, and `/completehabit` command flows with the `/managehabit` menu.
-- Changed habit archiving to require typing `ARCHIVE`.
+- Fixed swapped `Manage Habits` menu labels so button text matches its action.
+- Removed the typed `ARCHIVE` confirmation and danger styling from archiving a habit, replacing it with an inline note that archived habits no longer appear in daily tasks.
+- Grouped `View Archive` and `Archive Habit` under a new `Archive` category on the `Manage Habits` menu.
+- Changed `View Archive` rows to show the date range of a habit's most recent active stretch instead of just its archive date.
 - Changed challenge confirmation messages to include both duration and ending date.
 - Changed the main screen to keep the calendar and footer fixed while the selected day's habit list scrolls independently.
 - Documented `/stats` habit statistics, stats filters, and main habit-list scrolling in the README.

@@ -74,7 +74,8 @@ Everything lives in `terminal_habit_tracker.py`:
 - `CalendarSelection` — selected year/month plus month navigation.
 - Small dataclasses for domain/UI state: `Habit`, `HabitStatus`, `HabitChallenge`,
   `ChallengeProgress`, `HabitNoteCount`, `HabitNoteRef`, `HabitStreak`,
-  `HabitStats`, `PendingNotification`, `HitBox`, `NoteDisplayLine`.
+  `HabitStats`, `HabitActivePeriod`, `PendingNotification`, `HitBox`,
+  `NoteDisplayLine`.
 - `build_month_view` — plain-text calendar output used by `--plain`.
 - Backup helpers: `default_backup_directory`, `backup_destination`,
   `automatic_backup_destination`, `automatic_backup_paths`,
@@ -86,11 +87,32 @@ The in-app slash commands are the `COMMANDS` list: `/help`, `/backup`,
 command prompt supports suggestion/tab-completion when there's a single match.
 
 `CalendarApp.view` is string-based; known views are `main`, `help`, `backups`,
-`manage_backups`, `manage_habits`, `rename_habits`, `complete_habits`,
-`complete_challenge_habits`, `create_challenge`, `challenge_existing_habits`,
-`challenge_end_options`, `challenge_date_picker`, `delete_habits`,
-`notifications`, `notes`, `habit_notes`, `stats`, `habit_stats`,
-`streak_history`, `note_editor`.
+`manage_backups`, `manage_habits`, `rename_habits`, `archive_mode`,
+`archive_habits`, `archived_habits`, `archive_period_list`,
+`archive_period_stats`, `archive_period_streak_history`,
+`archive_period_notes`, `complete_habits`, `complete_challenge_habits`,
+`create_challenge`, `challenge_existing_habits`, `challenge_end_options`,
+`challenge_date_picker`, `delete_habits`, `notifications`, `notes`,
+`habit_notes`, `stats`, `habit_stats`, `streak_history`, `note_editor`.
+
+`Manage Habits` nests two sub-flows one level deep, mirroring each other:
+`Challenge Mode` → `create_challenge` (and its own sub-screens), and
+`Archive` (`archive_mode`) → `archive_habits` (pick an active habit to
+archive) or `archived_habits` (browse/resurrect already-archived habits).
+`go_back()` returns each nested view to its category page, and each
+category page back to `manage_habits`.
+
+`archived_habits` nests a further, separate sub-flow: its "Stats" button
+opens `archive_period_list` (every historical active stretch for that
+habit, derived from `HabitStore.active_periods_for_habit`, most recent
+first), and each numbered stretch opens `archive_period_stats` →
+optionally `archive_period_streak_history`/`archive_period_notes`. This
+mirrors the shape of the main `habit_stats`/`streak_history`/`habit_notes`
+flow, but every number (current streak, longest streak, streak history,
+note count) is computed via `HabitStore.habit_stats_for_period` scoped
+strictly to that one stretch's `[start, end]` window — it does not touch
+`/stats` or `HabitStore.habit_stats`, which remain whole-lifetime and
+unscoped.
 
 ### Domain model / lifecycle rules
 
@@ -107,6 +129,13 @@ command prompt supports suggestion/tab-completion when there's a single match.
 - Archiving (setting `completed_at`) hides a habit from active tracking but
   preserves history; it only ever happens when explicitly chosen from
   `/managehabit`, never automatically. Archived habits can be resurrected.
+- Every archive/resurrect cycle is a row in `habit_archive_periods`
+  (`archived_at`, `resurrected_at` nullable). `active_periods_for_habit`
+  reconstructs each closed active stretch from this table plus the habit's
+  `start_date`; it assumes the habit is currently archived (guaranteed by
+  `_ensure_archive_periods`) and does not handle a still-open trailing
+  stretch — don't reuse it for currently-active habits without adjusting for
+  that.
 - "Challenge mode" reuses `completed_at` set to a future end date instead of
   archiving. Challenge duration is inclusive: a 90-day challenge created today
   ends 89 days from today. Dates after a challenge end still show the habit as
