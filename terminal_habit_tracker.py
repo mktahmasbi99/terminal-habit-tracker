@@ -1139,6 +1139,10 @@ class CalendarApp:
     clicked_notification_dates: set[date] = field(default_factory=set)
     notification_scroll: int = 0
     main_habit_scroll: int = 0
+    main_focus: str = "calendar"
+    day_panel_row: int = 0
+    day_panel_action: int = 0
+    _current_day_panel_habits: list[Habit] = field(default_factory=list)
     notes_scroll: int = 0
     habit_notes_scroll: int = 0
     stats_scroll: int = 0
@@ -1191,6 +1195,9 @@ class CalendarApp:
             self.selection = self.selection.next_month()
         self.selected_day = None
         self.main_habit_scroll = 0
+        self.main_focus = "calendar"
+        self.day_panel_row = 0
+        self.day_panel_action = 0
         if self.view == "challenge_date_picker":
             self.message = "Pick the challenge ending date."
         else:
@@ -1199,6 +1206,9 @@ class CalendarApp:
     def select_day(self, day: int) -> None:
         self.selected_day = day
         self.main_habit_scroll = 0
+        self.main_focus = "calendar"
+        self.day_panel_row = 0
+        self.day_panel_action = 0
         selected = self.selected_date
         if selected is not None and self.view == "challenge_date_picker":
             self.apply_challenge_end_date(selected)
@@ -1350,15 +1360,50 @@ class CalendarApp:
         self.habit_notes_scroll = min(max_scroll, max(0, self.habit_notes_scroll + delta))
         self.message = ""
 
-    def scroll_main_habits(self, delta: int, page_size: int) -> None:
-        selected = self.selected_date
-        if selected is None:
-            self.main_habit_scroll = 0
-            return
-        habits = self.store.habits_for_day(selected)
-        max_scroll = max(0, len(habits) - max(1, page_size))
-        self.main_habit_scroll = min(max_scroll, max(0, self.main_habit_scroll + delta))
+    def toggle_main_focus(self) -> None:
+        self.main_focus = "day_panel" if self.main_focus == "calendar" else "calendar"
+
+    def move_day_cursor(self, delta: int) -> None:
+        today = date.today()
+        days_in_month = calendar.monthrange(self.selection.year, self.selection.month)[1]
+        if self.selected_day is None:
+            if self.selection.year == today.year and self.selection.month == today.month:
+                self.selected_day = today.day
+            else:
+                self.selected_day = 1
+        else:
+            self.selected_day = max(1, min(days_in_month, self.selected_day + delta))
+        self.main_habit_scroll = 0
+        self.day_panel_row = 0
+        self.day_panel_action = 0
         self.message = ""
+
+    def move_day_panel_row(self, delta: int) -> None:
+        habits = self._current_day_panel_habits
+        if not habits:
+            return
+        self.day_panel_row = max(0, min(len(habits) - 1, self.day_panel_row + delta))
+
+    def move_day_panel_action(self, delta: int) -> None:
+        if not self._current_day_panel_habits:
+            return
+        self.day_panel_action = max(0, min(3, self.day_panel_action + delta))
+
+    def activate_day_panel_selection(self) -> None:
+        habits = self._current_day_panel_habits
+        if not habits or self.day_panel_row >= len(habits):
+            return
+        habit = habits[self.day_panel_row]
+        if self.day_panel_action == 0:
+            self.set_habit_status(habit.habit_id, STATUS_PENDING)
+        elif self.day_panel_action == 1:
+            self.set_habit_status(habit.habit_id, STATUS_DONE)
+        elif self.day_panel_action == 2:
+            self.set_habit_status(habit.habit_id, STATUS_MISSED)
+        else:
+            selected = self.selected_date
+            if selected is not None:
+                self.open_note_editor(habit.habit_id, habit.name, selected)
 
     def scroll_stats(self, delta: int, page_size: int) -> None:
         stats = self.store.habit_stats_list(self.stats_include_archived)
@@ -1380,6 +1425,9 @@ class CalendarApp:
         self.selection = CalendarSelection(notification_day.year, notification_day.month)
         self.selected_day = notification_day.day
         self.main_habit_scroll = 0
+        self.main_focus = "calendar"
+        self.day_panel_row = 0
+        self.day_panel_action = 0
         self.view = "main"
         self.message = f"Selected {notification_day.isoformat()} from notifications."
 
@@ -1934,8 +1982,9 @@ class CalendarApp:
         title_x = CALENDAR_LEFT + 8
         next_x = title_x + len(title) + 4
 
+        title_color = self._color(2) if self.main_focus == "calendar" else self._color(1)
         self._addstr(screen, 1, CALENDAR_LEFT, previous_label, curses.A_BOLD)
-        self._addstr(screen, 1, title_x, title, self._color(1) | curses.A_BOLD)
+        self._addstr(screen, 1, title_x, title, title_color | curses.A_BOLD)
         self._addstr(screen, 1, next_x, next_label, curses.A_BOLD)
 
         self.hitboxes.append(HitBox("previous", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(previous_label) - 1))
@@ -1981,11 +2030,13 @@ class CalendarApp:
         selected = self.selected_date
         if selected is None:
             self.main_habit_scroll = 0
+            self._current_day_panel_habits = []
             self._addstr(screen, 1, DETAIL_LEFT, "Select a day", curses.A_BOLD)
             self._addstr(screen, 3, DETAIL_LEFT, "Click a date to manage daily habits.")
             return
 
-        self._addstr(screen, 1, DETAIL_LEFT, selected.isoformat(), self._color(1) | curses.A_BOLD)
+        date_color = self._color(2) if self.main_focus == "day_panel" else self._color(1)
+        self._addstr(screen, 1, DETAIL_LEFT, selected.isoformat(), date_color | curses.A_BOLD)
         notifications = self.store.past_pending_notifications()
         if notifications:
             notifications_label = "Notifications"
@@ -2008,20 +2059,31 @@ class CalendarApp:
         habits = self.store.habits_for_day(selected)
         if not habits:
             self.main_habit_scroll = 0
+            self.day_panel_row = 0
+            self._current_day_panel_habits = []
             self._addstr(screen, 5, DETAIL_LEFT, "No habits active yet.")
             self._addstr(screen, 6, DETAIL_LEFT, "Add one from this date to start tracking.")
             return
+
+        self._current_day_panel_habits = habits
+        self.day_panel_row = max(0, min(len(habits) - 1, self.day_panel_row))
 
         list_top = 5
         footer_y = self._main_footer_y(height)
         list_bottom = footer_y - 1
         visible_count = max(1, (list_bottom - list_top + 2) // 3)
         max_scroll = max(0, len(habits) - visible_count)
-        self.main_habit_scroll = min(self.main_habit_scroll, max_scroll)
+        if self.day_panel_row < self.main_habit_scroll:
+            self.main_habit_scroll = self.day_panel_row
+        elif self.day_panel_row >= self.main_habit_scroll + visible_count:
+            self.main_habit_scroll = self.day_panel_row - visible_count + 1
+        self.main_habit_scroll = max(0, min(self.main_habit_scroll, max_scroll))
         visible_habits = habits[self.main_habit_scroll : self.main_habit_scroll + visible_count]
 
         for index, habit in enumerate(visible_habits):
             y = list_top + index * 3
+            absolute_index = self.main_habit_scroll + index
+            row_focused = self.main_focus == "day_panel" and absolute_index == self.day_panel_row
             challenge_progress = self.store.challenge_progress_for_habit_day(habit.habit_id, selected)
             if challenge_progress is not None:
                 habit_label = (
@@ -2042,9 +2104,21 @@ class CalendarApp:
             missed_x = DETAIL_LEFT + 21
             note_x = DETAIL_LEFT + 30
             note_style = self._color(7) if habit.habit_id in note_habit_ids else curses.A_DIM
-            self._addstr(screen, y + 1, pending_x, pending_label, self._action_style(habit.status, STATUS_PENDING))
-            self._addstr(screen, y + 1, done_x, done_label, self._action_style(habit.status, STATUS_DONE))
-            self._addstr(screen, y + 1, missed_x, missed_label, self._action_style(habit.status, STATUS_MISSED))
+            pending_style = self._action_style(habit.status, STATUS_PENDING)
+            done_style = self._action_style(habit.status, STATUS_DONE)
+            missed_style = self._action_style(habit.status, STATUS_MISSED)
+            if row_focused:
+                if self.day_panel_action == 0:
+                    pending_style = self._selected_style(pending_style)
+                elif self.day_panel_action == 1:
+                    done_style = self._selected_style(done_style)
+                elif self.day_panel_action == 2:
+                    missed_style = self._selected_style(missed_style)
+                else:
+                    note_style = self._selected_style(note_style)
+            self._addstr(screen, y + 1, pending_x, pending_label, pending_style)
+            self._addstr(screen, y + 1, done_x, done_label, done_style)
+            self._addstr(screen, y + 1, missed_x, missed_label, missed_style)
             self._addstr(screen, y + 1, note_x, note_label, note_style)
             self.hitboxes.append(HitBox("set_status", y + 1, pending_x, pending_x + len(pending_label) - 1, (habit.habit_id, STATUS_PENDING)))
             self.hitboxes.append(HitBox("set_status", y + 1, done_x, done_x + len(done_label) - 1, (habit.habit_id, STATUS_DONE)))
@@ -3129,8 +3203,12 @@ class CalendarApp:
         height, _ = screen.getmaxyx()
         footer_y = self._main_footer_y(height)
         self._draw_message(screen, footer_y)
-        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Keys: / cmd, h help, q quit, Left/Right month, Up/Down or j/k habits.")
-        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "t today, a add habit; + done, ! missed, yellow = past pending.")
+        if self.main_focus == "day_panel":
+            keys_line = "Keys: / cmd, q quit, Tab calendar, j/k row, h/l action, Enter set."
+        else:
+            keys_line = "Keys: / cmd, q quit, Tab day panel, h/l/j/k day, t today, a add."
+        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, keys_line)
+        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "+ done, ! missed, yellow = past pending.")
 
     @staticmethod
     def _main_footer_y(height: int) -> int:
@@ -3342,26 +3420,36 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
         elif key == ord("/"):
             if not app.run_command(screen):
                 break
-        elif app.view == "main" and key in (ord("h"), ord("H")):
-            app.open_help()
+        elif app.view == "main" and key == 9:
+            app.toggle_main_focus()
         elif app.view == "main" and key == curses.KEY_LEFT:
             app.move_month(-1)
         elif app.view == "main" and key == curses.KEY_RIGHT:
             app.move_month(1)
-        elif app.view == "main" and key in (curses.KEY_UP, ord("k"), ord("K")):
+        elif app.view == "main" and app.main_focus == "calendar" and key in (ord("h"), ord("H")):
+            app.move_day_cursor(-1)
+        elif app.view == "main" and app.main_focus == "calendar" and key in (ord("l"), ord("L")):
+            app.move_day_cursor(1)
+        elif app.view == "main" and app.main_focus == "calendar" and key in (curses.KEY_UP, ord("k"), ord("K")):
+            app.move_day_cursor(-7)
+        elif app.view == "main" and app.main_focus == "calendar" and key in (curses.KEY_DOWN, ord("j"), ord("J")):
+            app.move_day_cursor(7)
+        elif app.view == "main" and app.main_focus == "day_panel" and key in (curses.KEY_UP, ord("k"), ord("K")):
+            app.move_day_panel_row(-1)
+        elif app.view == "main" and app.main_focus == "day_panel" and key in (curses.KEY_DOWN, ord("j"), ord("J")):
+            app.move_day_panel_row(1)
+        elif app.view == "main" and app.main_focus == "day_panel" and key in (ord("h"), ord("H")):
+            app.move_day_panel_action(-1)
+        elif app.view == "main" and app.main_focus == "day_panel" and key in (ord("l"), ord("L")):
+            app.move_day_panel_action(1)
+        elif app.view == "main" and app.main_focus == "day_panel" and key == curses.KEY_PPAGE:
             height, _ = screen.getmaxyx()
-            app.scroll_main_habits(-1, app._main_habit_page_size(height))
-        elif app.view == "main" and key in (curses.KEY_DOWN, ord("j"), ord("J")):
+            app.move_day_panel_row(-app._main_habit_page_size(height))
+        elif app.view == "main" and app.main_focus == "day_panel" and key == curses.KEY_NPAGE:
             height, _ = screen.getmaxyx()
-            app.scroll_main_habits(1, app._main_habit_page_size(height))
-        elif app.view == "main" and key == curses.KEY_PPAGE:
-            height, _ = screen.getmaxyx()
-            page_size = app._main_habit_page_size(height)
-            app.scroll_main_habits(-page_size, page_size)
-        elif app.view == "main" and key == curses.KEY_NPAGE:
-            height, _ = screen.getmaxyx()
-            page_size = app._main_habit_page_size(height)
-            app.scroll_main_habits(page_size, page_size)
+            app.move_day_panel_row(app._main_habit_page_size(height))
+        elif app.view == "main" and app.main_focus == "day_panel" and key in (curses.KEY_ENTER, 10, 13, ord(" ")):
+            app.activate_day_panel_selection()
         elif app.view == "notifications" and key in (curses.KEY_UP, ord("k"), ord("K")):
             height, _ = screen.getmaxyx()
             app.scroll_notifications(-1, max(1, height - 5))
@@ -3439,6 +3527,9 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             app.selection = CalendarSelection(today.year, today.month)
             app.selected_day = today.day
             app.main_habit_scroll = 0
+            app.main_focus = "calendar"
+            app.day_panel_row = 0
+            app.day_panel_action = 0
             app.message = ""
         elif app.view in MENU_VIEWS and key in (curses.KEY_UP, ord("k"), ord("K")):
             app.move_menu_selection(-1)

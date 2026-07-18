@@ -96,11 +96,12 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Press `Esc` while adding a habit to cancel without saving
 - Click `Pending`, `Done`, or `Missed` to set a habit status for the selected date
 - Click `+Note` to add a note for a habit on the selected date, or highlighted `Note` to reopen an existing note
-- Use Up/Down, `j`/`k`, or Page Up/Page Down on the main screen to scroll the selected day's habit list when needed
+- Press `Tab` on the main screen to switch keyboard focus between the calendar grid and the day panel; the footer's key hints update to match, and the focused side's title (the month name or the selected date) highlights to show which one is active
+- With the calendar grid focused, use `h`/`l` to move the selected day by one, or Up/Down/`j`/`k` to move it by a week (both clamped to the current month)
+- With the day panel focused, use Up/Down or `j`/`k` to move between habits (Page Up/Page Down jumps by a page, and the list scrolls to follow), `h`/`l` to move between `Pending`/`Done`/`Missed`/`+Note`, and `Enter` or Space to set the highlighted action
 - Click `Notifications` when shown to review past dates with pending habits, then click a notification to jump to that date
 - Use Up/Down or Page Up/Page Down to scroll the notifications page when needed
 - Press `/` to enter a command; matching commands are suggested as you type, and `Tab` completes a single match
-- Press `h` to open help from the main screen
 - Use `/help` to list hidden commands
 - Use `/backup` to open backup tools, then choose `Create Backup` or `Manage Backups`
 - Use `/managehabit` to open habit management, then choose `Rename`, `Challenge Mode`, `Archive`, or `Delete [DANGER]`
@@ -114,7 +115,7 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - In `Archive`, choose `View Archive` to view archived habits and resurrect them
 - Type `DELETE` when prompted to confirm an irreversible habit deletion
 - Use `/quit` to quit from the command prompt
-- Press left/right arrows to move between months
+- Press left/right arrows to move between months, regardless of which part of the main screen has keyboard focus
 - Press `t` to jump to today
 - In `/`-command menu screens (Manage Habits, Backups, Help, Stats details,
   Challenge Mode, Archive, and their sub-screens), use Up/Down or `j`/`k` to
