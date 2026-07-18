@@ -168,3 +168,7 @@ unscoped.
 - Preserve local SQLite data and backup safety: never delete/overwrite
   `habit_tracker.sqlite3` or `backups/` while testing — always use `--db
   /tmp/...` or another temporary path.
+- Commit subject lines use Conventional Commits (`feat:`, `fix:`, `docs:`,
+  `refactor:`, `chore:`, etc.), starting from this convention's adoption —
+  earlier history in this repo predates it and uses plain imperative
+  subjects instead.

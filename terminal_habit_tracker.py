@@ -1609,7 +1609,9 @@ class CalendarApp:
             self.set_stats_filter(False)
             return True
         if normalized == "/quit":
-            return False
+            if self.confirm_quit(screen):
+                return False
+            return True
 
         self.message = f"Unknown command: {command}. Try /help."
         return True
@@ -3303,6 +3305,27 @@ class CalendarApp:
         finally:
             curses.curs_set(0)
 
+    def confirm_quit(self, screen: "curses.window") -> bool:
+        y = CALENDAR_TOP + 10
+        height, _ = screen.getmaxyx()
+        if 0 <= y < height:
+            screen.move(y, 0)
+            screen.clrtoeol()
+        self._addstr(screen, y, CALENDAR_LEFT, "Quit the app? (y/n): ")
+        curses.curs_set(1)
+        try:
+            screen.move(y, CALENDAR_LEFT + len("Quit the app? (y/n): "))
+            screen.refresh()
+            while True:
+                key = screen.getch()
+                if key in (ord("y"), ord("Y")):
+                    return True
+                if key in (ord("n"), ord("N"), 27):
+                    self.message = "Quit cancelled."
+                    return False
+        finally:
+            curses.curs_set(0)
+
     def _danger_style(self) -> int:
         return self._color(4) | curses.A_BOLD
 
@@ -3411,7 +3434,9 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             continue
 
         if key in (ord("q"), ord("Q")):
-            break
+            if app.confirm_quit(screen):
+                break
+            continue
         if app.view != "main" and app.view not in MENU_VIEWS and key in (ord("b"), ord("B")):
             app.go_back()
         elif key == 27:
