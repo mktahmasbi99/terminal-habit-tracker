@@ -38,6 +38,29 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/quit", "Quit the app."),
 )
 
+MENU_VIEWS: frozenset[str] = frozenset(
+    {
+        "help",
+        "manage_habits",
+        "delete_habits",
+        "rename_habits",
+        "archive_mode",
+        "archive_habits",
+        "archived_habits",
+        "archive_period_list",
+        "archive_period_stats",
+        "archive_period_streak_history",
+        "archive_period_notes",
+        "challenge_mode",
+        "create_challenge",
+        "challenge_existing_habits",
+        "challenge_end_options",
+        "backups",
+        "manage_backups",
+        "habit_stats",
+    }
+)
+
 
 @dataclass(frozen=True)
 class CalendarSelection:
@@ -1144,6 +1167,9 @@ class CalendarApp:
     note_editing: bool = False
     note_command: str | None = None
     note_scroll: int = 0
+    menu_index: int = 0
+    _current_menu_items: list[HitBox] = field(default_factory=list)
+    _last_menu_view: str = ""
 
     def __post_init__(self) -> None:
         current = date.today()
@@ -1710,107 +1736,126 @@ class CalendarApp:
         for hitbox in self.hitboxes:
             if not hitbox.contains(y, x):
                 continue
-            if hitbox.name == "previous":
-                self.move_month(-1)
-            elif hitbox.name == "next":
-                self.move_month(1)
-            elif hitbox.name == "back":
-                self.go_back()
-            elif hitbox.name == "create_backup":
-                self.create_backup()
-            elif hitbox.name == "manage_backups":
-                self.open_manage_backups()
-            elif hitbox.name == "notifications":
-                self.open_notifications()
-            elif hitbox.name == "notification" and hitbox.value is not None:
-                self.open_notification_date(hitbox.value)
-            elif hitbox.name == "notes_habit" and hitbox.value is not None:
-                habit_id, habit_name, note_count = hitbox.value
-                self.open_habit_notes(int(habit_id), str(habit_name), int(note_count))
-            elif hitbox.name == "habit_note" and hitbox.value is not None:
-                habit_id, habit_name, note_date = hitbox.value
-                self.open_note_editor(int(habit_id), str(habit_name), note_date, "habit_notes")
-            elif hitbox.name == "stats_habit" and hitbox.value is not None:
-                habit_id, habit_name = hitbox.value
-                self.open_habit_stats(int(habit_id), str(habit_name))
-            elif hitbox.name == "stats_streak_history":
-                self.open_streak_history()
-            elif hitbox.name == "stats_notes" and hitbox.value is not None:
-                habit_id, habit_name, note_count = hitbox.value
-                self.open_habit_notes(int(habit_id), str(habit_name), int(note_count))
-            elif hitbox.name == "delete_backup" and hitbox.value is not None:
-                self.delete_backup(screen, Path(str(hitbox.value)))
-            elif hitbox.name == "restore_backup" and hitbox.value is not None:
-                self.restore_backup(screen, Path(str(hitbox.value)))
-            elif hitbox.name == "manage_rename":
-                self.open_rename_habits()
-            elif hitbox.name == "manage_challenge":
-                self.open_challenge_mode()
-            elif hitbox.name == "challenge_create":
-                self.open_create_challenge()
-            elif hitbox.name == "challenge_existing":
-                self.open_existing_challenge_habits()
-            elif hitbox.name == "challenge_new":
-                self.create_new_challenge_habit(screen)
-            elif hitbox.name == "challenge_existing_habit" and hitbox.value is not None:
-                habit_id, habit_name = hitbox.value
-                self.choose_existing_challenge_habit(int(habit_id), str(habit_name))
-            elif hitbox.name == "challenge_duration":
-                self.set_challenge_duration(screen)
-            elif hitbox.name == "challenge_end_date":
-                self.start_challenge_end_date_pick()
-            elif hitbox.name == "manage_delete":
-                self.open_delete_habits()
-            elif hitbox.name == "manage_archive_mode":
-                self.open_archive_mode()
-            elif hitbox.name == "archive_mode_view":
-                self.open_archived_habits()
-            elif hitbox.name == "archive_mode_archive":
-                self.open_archive_habits()
-            elif hitbox.name == "delete_habit" and hitbox.value is not None:
-                habit_id, habit_name = hitbox.value
-                self.delete_habit(screen, int(habit_id), str(habit_name))
-            elif hitbox.name == "archive_habit" and hitbox.value is not None:
-                habit_id, habit_name = hitbox.value
-                self.archive_habit(int(habit_id), str(habit_name))
-            elif hitbox.name == "resurrect_habit" and hitbox.value is not None:
-                habit_id, habit_name = hitbox.value
-                self.resurrect_habit(int(habit_id), str(habit_name))
-            elif hitbox.name == "archived_habit_stats" and hitbox.value is not None:
-                habit_id, habit_name = hitbox.value
-                self.open_archive_period_list(int(habit_id), str(habit_name))
-            elif hitbox.name == "archive_period_row" and hitbox.value is not None:
-                period_number, start_iso, end_iso = hitbox.value
-                self.open_archive_period_stats(
-                    int(period_number),
-                    date.fromisoformat(str(start_iso)),
-                    date.fromisoformat(str(end_iso)),
-                )
-            elif hitbox.name == "archive_period_streak_history_link":
-                self.open_archive_period_streak_history()
-            elif hitbox.name == "archive_period_notes_link":
-                self.open_archive_period_notes()
-            elif hitbox.name == "archive_period_note" and hitbox.value is not None:
-                habit_id, habit_name, note_date = hitbox.value
-                self.open_note_editor(int(habit_id), str(habit_name), note_date, "archive_period_notes")
-            elif hitbox.name == "rename_habit" and hitbox.value is not None:
-                habit_id, habit_name = hitbox.value
-                self.rename_habit(screen, int(habit_id), str(habit_name))
-            elif hitbox.name == "day" and hitbox.value is not None:
-                self.select_day(int(hitbox.value))
-            elif hitbox.name == "add_habit":
-                self.add_habit(screen)
-            elif hitbox.name == "set_status" and hitbox.value is not None:
-                habit_id, status = hitbox.value
-                self.set_habit_status(int(habit_id), str(status))
-            elif hitbox.name == "note" and hitbox.value is not None:
-                habit_id, habit_name, note_date = hitbox.value
-                self.open_note_editor(int(habit_id), str(habit_name), note_date)
+            if hitbox in self._current_menu_items:
+                self.menu_index = self._current_menu_items.index(hitbox)
+            self._activate(hitbox, screen)
             return
+
+    def move_menu_selection(self, delta: int) -> None:
+        if not self._current_menu_items:
+            return
+        self.menu_index = max(0, min(self.menu_index + delta, len(self._current_menu_items) - 1))
+
+    def activate_menu_selection(self, screen: "curses.window") -> None:
+        if not self._current_menu_items:
+            return
+        self._activate(self._current_menu_items[self.menu_index], screen)
+
+    def _activate(self, hitbox: HitBox, screen: "curses.window") -> None:
+        if hitbox.name == "previous":
+            self.move_month(-1)
+        elif hitbox.name == "next":
+            self.move_month(1)
+        elif hitbox.name == "back":
+            self.go_back()
+        elif hitbox.name == "create_backup":
+            self.create_backup()
+        elif hitbox.name == "manage_backups":
+            self.open_manage_backups()
+        elif hitbox.name == "notifications":
+            self.open_notifications()
+        elif hitbox.name == "notification" and hitbox.value is not None:
+            self.open_notification_date(hitbox.value)
+        elif hitbox.name == "notes_habit" and hitbox.value is not None:
+            habit_id, habit_name, note_count = hitbox.value
+            self.open_habit_notes(int(habit_id), str(habit_name), int(note_count))
+        elif hitbox.name == "habit_note" and hitbox.value is not None:
+            habit_id, habit_name, note_date = hitbox.value
+            self.open_note_editor(int(habit_id), str(habit_name), note_date, "habit_notes")
+        elif hitbox.name == "stats_habit" and hitbox.value is not None:
+            habit_id, habit_name = hitbox.value
+            self.open_habit_stats(int(habit_id), str(habit_name))
+        elif hitbox.name == "stats_streak_history":
+            self.open_streak_history()
+        elif hitbox.name == "stats_notes" and hitbox.value is not None:
+            habit_id, habit_name, note_count = hitbox.value
+            self.open_habit_notes(int(habit_id), str(habit_name), int(note_count))
+        elif hitbox.name == "delete_backup" and hitbox.value is not None:
+            self.delete_backup(screen, Path(str(hitbox.value)))
+        elif hitbox.name == "restore_backup" and hitbox.value is not None:
+            self.restore_backup(screen, Path(str(hitbox.value)))
+        elif hitbox.name == "manage_rename":
+            self.open_rename_habits()
+        elif hitbox.name == "manage_challenge":
+            self.open_challenge_mode()
+        elif hitbox.name == "challenge_create":
+            self.open_create_challenge()
+        elif hitbox.name == "challenge_existing":
+            self.open_existing_challenge_habits()
+        elif hitbox.name == "challenge_new":
+            self.create_new_challenge_habit(screen)
+        elif hitbox.name == "challenge_existing_habit" and hitbox.value is not None:
+            habit_id, habit_name = hitbox.value
+            self.choose_existing_challenge_habit(int(habit_id), str(habit_name))
+        elif hitbox.name == "challenge_duration":
+            self.set_challenge_duration(screen)
+        elif hitbox.name == "challenge_end_date":
+            self.start_challenge_end_date_pick()
+        elif hitbox.name == "manage_delete":
+            self.open_delete_habits()
+        elif hitbox.name == "manage_archive_mode":
+            self.open_archive_mode()
+        elif hitbox.name == "archive_mode_view":
+            self.open_archived_habits()
+        elif hitbox.name == "archive_mode_archive":
+            self.open_archive_habits()
+        elif hitbox.name == "delete_habit" and hitbox.value is not None:
+            habit_id, habit_name = hitbox.value
+            self.delete_habit(screen, int(habit_id), str(habit_name))
+        elif hitbox.name == "archive_habit" and hitbox.value is not None:
+            habit_id, habit_name = hitbox.value
+            self.archive_habit(int(habit_id), str(habit_name))
+        elif hitbox.name == "resurrect_habit" and hitbox.value is not None:
+            habit_id, habit_name = hitbox.value
+            self.resurrect_habit(int(habit_id), str(habit_name))
+        elif hitbox.name == "archived_habit_stats" and hitbox.value is not None:
+            habit_id, habit_name = hitbox.value
+            self.open_archive_period_list(int(habit_id), str(habit_name))
+        elif hitbox.name == "archive_period_row" and hitbox.value is not None:
+            period_number, start_iso, end_iso = hitbox.value
+            self.open_archive_period_stats(
+                int(period_number),
+                date.fromisoformat(str(start_iso)),
+                date.fromisoformat(str(end_iso)),
+            )
+        elif hitbox.name == "archive_period_streak_history_link":
+            self.open_archive_period_streak_history()
+        elif hitbox.name == "archive_period_notes_link":
+            self.open_archive_period_notes()
+        elif hitbox.name == "archive_period_note" and hitbox.value is not None:
+            habit_id, habit_name, note_date = hitbox.value
+            self.open_note_editor(int(habit_id), str(habit_name), note_date, "archive_period_notes")
+        elif hitbox.name == "rename_habit" and hitbox.value is not None:
+            habit_id, habit_name = hitbox.value
+            self.rename_habit(screen, int(habit_id), str(habit_name))
+        elif hitbox.name == "day" and hitbox.value is not None:
+            self.select_day(int(hitbox.value))
+        elif hitbox.name == "add_habit":
+            self.add_habit(screen)
+        elif hitbox.name == "set_status" and hitbox.value is not None:
+            habit_id, status = hitbox.value
+            self.set_habit_status(int(habit_id), str(status))
+        elif hitbox.name == "note" and hitbox.value is not None:
+            habit_id, habit_name, note_date = hitbox.value
+            self.open_note_editor(int(habit_id), str(habit_name), note_date)
 
     def render(self, screen: "curses.window") -> None:
         screen.erase()
         self.hitboxes.clear()
+        self._current_menu_items = []
+        if self.view != self._last_menu_view:
+            self.menu_index = 0
+            self._last_menu_view = self.view
         height, width = screen.getmaxyx()
 
         if height < 17 or width < 76:
@@ -1878,6 +1923,8 @@ class CalendarApp:
             self._draw_calendar(screen)
             self._draw_day_panel(screen)
             self._draw_footer(screen)
+        if self._current_menu_items:
+            self.menu_index = max(0, min(self.menu_index, len(self._current_menu_items) - 1))
         screen.refresh()
 
     def _draw_header(self, screen: "curses.window") -> None:
@@ -2020,8 +2067,8 @@ class CalendarApp:
             self._addstr(screen, y, CALENDAR_LEFT, command, curses.A_BOLD)
             self._addstr(screen, y, CALENDAR_LEFT + 14, description)
         footer_y = 3 + len(COMMANDS) + 1
-        self._addstr(screen, footer_y, CALENDAR_LEFT, "Press / to enter a command. Press b to go back.")
-        self._draw_message(screen, footer_y + 1)
+        self._addstr(screen, footer_y, CALENDAR_LEFT, "Press / to enter a command. Press h to go back.")
+        self._draw_menu_status(screen, footer_y + 1)
 
     def handle_note_key(self, key: int) -> None:
         if self.view != "note_editor":
@@ -2333,7 +2380,7 @@ class CalendarApp:
         if self.selected_stats_habit_id is None:
             self._addstr(screen, 4, CALENDAR_LEFT, "No habit selected.")
             self._draw_command_footer(screen, footer_y)
-            self._draw_message(screen, message_y)
+            self._draw_menu_status(screen, message_y)
             return
 
         try:
@@ -2341,7 +2388,7 @@ class CalendarApp:
         except ValueError as exc:
             self._addstr(screen, 4, CALENDAR_LEFT, str(exc))
             self._draw_command_footer(screen, footer_y)
-            self._draw_message(screen, message_y)
+            self._draw_menu_status(screen, message_y)
             return
 
         habit = stats.habit
@@ -2359,8 +2406,7 @@ class CalendarApp:
         self._addstr(screen, 6, CALENDAR_LEFT, self._truncate(longest_label, 70))
 
         history_label = f"Streak History: {len(stats.streaks)}"
-        self._addstr(screen, 8, CALENDAR_LEFT, history_label, curses.A_BOLD)
-        self.hitboxes.append(HitBox("stats_streak_history", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(history_label) - 1))
+        self._draw_menu_option(screen, 8, CALENDAR_LEFT, history_label, "stats_streak_history")
 
         self._addstr(screen, 10, CALENDAR_LEFT, f"Start date: {habit.start_date.isoformat()}")
         if habit.archived_at is not None:
@@ -2369,19 +2415,18 @@ class CalendarApp:
         notes_y = 13 if habit.archived_at is not None else 12
         notes_label = f"Notes: {stats.note_count}"
         notes_style = curses.A_BOLD if stats.note_count else curses.A_DIM
-        self._addstr(screen, notes_y, CALENDAR_LEFT, notes_label, notes_style)
-        self.hitboxes.append(
-            HitBox(
-                "stats_notes",
-                notes_y,
-                CALENDAR_LEFT,
-                CALENDAR_LEFT + len(notes_label) - 1,
-                (habit.habit_id, habit.name, stats.note_count),
-            )
+        self._draw_menu_option(
+            screen,
+            notes_y,
+            CALENDAR_LEFT,
+            notes_label,
+            "stats_notes",
+            (habit.habit_id, habit.name, stats.note_count),
+            notes_style,
         )
 
         self._draw_command_footer(screen, footer_y)
-        self._draw_message(screen, message_y)
+        self._draw_menu_status(screen, message_y)
 
     def _draw_streak_history_page(self, screen: "curses.window") -> None:
         height, _ = screen.getmaxyx()
@@ -2572,11 +2617,9 @@ class CalendarApp:
 
         create_label = "Create Backup"
         manage_label = "Manage Backups"
-        self._addstr(screen, 3, CALENDAR_LEFT, create_label, curses.A_BOLD)
-        self._addstr(screen, 5, CALENDAR_LEFT, manage_label, curses.A_BOLD)
-        self.hitboxes.append(HitBox("create_backup", 3, CALENDAR_LEFT, CALENDAR_LEFT + len(create_label) - 1))
-        self.hitboxes.append(HitBox("manage_backups", 5, CALENDAR_LEFT, CALENDAR_LEFT + len(manage_label) - 1))
-        self._draw_message(screen, 16)
+        self._draw_menu_option(screen, 3, CALENDAR_LEFT, create_label, "create_backup")
+        self._draw_menu_option(screen, 5, CALENDAR_LEFT, manage_label, "manage_backups")
+        self._draw_menu_status(screen, 16)
 
     def _draw_manage_backups_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -2589,7 +2632,7 @@ class CalendarApp:
         if not backups:
             self._addstr(screen, 4, CALENDAR_LEFT, "No backups found.")
             self._addstr(screen, 15, CALENDAR_LEFT, legend)
-            self._draw_message(screen, 16)
+            self._draw_menu_status(screen, 16)
             return
 
         self._addstr(screen, 3, CALENDAR_LEFT, "Backup File", curses.A_BOLD)
@@ -2603,19 +2646,15 @@ class CalendarApp:
             restore_x = DETAIL_LEFT + 20
             delete_x = restore_x + len(restore_label) + 3
             self._addstr(screen, y, CALENDAR_LEFT, backup_label)
-            self._addstr(screen, y, restore_x, restore_label, curses.A_BOLD)
-            self._addstr(screen, y, delete_x, delete_label, self._danger_style())
-            self.hitboxes.append(
-                HitBox("restore_backup", y, restore_x, restore_x + len(restore_label) - 1, backup_path)
-            )
-            self.hitboxes.append(
-                HitBox("delete_backup", y, delete_x, delete_x + len(delete_label) - 1, backup_path)
+            self._draw_menu_option(screen, y, restore_x, restore_label, "restore_backup", backup_path)
+            self._draw_menu_option(
+                screen, y, delete_x, delete_label, "delete_backup", backup_path, self._danger_style()
             )
 
         self._addstr(screen, 15, CALENDAR_LEFT, legend)
         if len(backups) > 9:
             self._addstr(screen, 16, CALENDAR_LEFT, f"Showing 9 of {len(backups)} backups.")
-        self._draw_message(screen, 17)
+        self._draw_menu_status(screen, 17)
 
     def _draw_manage_habits_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -2627,15 +2666,11 @@ class CalendarApp:
         challenge_label = "Challenge Mode"
         archive_label = "Archive"
         delete_label = "Delete [DANGER]"
-        self._addstr(screen, 4, CALENDAR_LEFT, rename_label, curses.A_BOLD)
-        self._addstr(screen, 6, CALENDAR_LEFT, challenge_label, curses.A_BOLD)
-        self._addstr(screen, 8, CALENDAR_LEFT, archive_label, curses.A_BOLD)
-        self._addstr(screen, 10, CALENDAR_LEFT, delete_label, self._danger_style())
-        self.hitboxes.append(HitBox("manage_rename", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(rename_label) - 1))
-        self.hitboxes.append(HitBox("manage_challenge", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(challenge_label) - 1))
-        self.hitboxes.append(HitBox("manage_archive_mode", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(archive_label) - 1))
-        self.hitboxes.append(HitBox("manage_delete", 10, CALENDAR_LEFT, CALENDAR_LEFT + len(delete_label) - 1))
-        self._draw_message(screen, 16)
+        self._draw_menu_option(screen, 4, CALENDAR_LEFT, rename_label, "manage_rename")
+        self._draw_menu_option(screen, 6, CALENDAR_LEFT, challenge_label, "manage_challenge")
+        self._draw_menu_option(screen, 8, CALENDAR_LEFT, archive_label, "manage_archive_mode")
+        self._draw_menu_option(screen, 10, CALENDAR_LEFT, delete_label, "manage_delete", None, self._danger_style())
+        self._draw_menu_status(screen, 16)
 
     def _draw_archive_mode_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -2645,11 +2680,9 @@ class CalendarApp:
 
         view_label = "View Archive"
         archive_label = "Archive Habit"
-        self._addstr(screen, 4, CALENDAR_LEFT, view_label, curses.A_BOLD)
-        self._addstr(screen, 6, CALENDAR_LEFT, archive_label, curses.A_BOLD)
-        self.hitboxes.append(HitBox("archive_mode_view", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(view_label) - 1))
-        self.hitboxes.append(HitBox("archive_mode_archive", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(archive_label) - 1))
-        self._draw_message(screen, 16)
+        self._draw_menu_option(screen, 4, CALENDAR_LEFT, view_label, "archive_mode_view")
+        self._draw_menu_option(screen, 6, CALENDAR_LEFT, archive_label, "archive_mode_archive")
+        self._draw_menu_status(screen, 16)
 
     def _draw_delete_habits_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -2660,7 +2693,7 @@ class CalendarApp:
         habits = self.store.list_habits()
         if not habits:
             self._addstr(screen, 4, CALENDAR_LEFT, "No habits to delete.")
-            self._draw_message(screen)
+            self._draw_menu_status(screen)
             return
 
         self._addstr(screen, 3, CALENDAR_LEFT, "Delete Habit", curses.A_BOLD)
@@ -2672,12 +2705,13 @@ class CalendarApp:
             delete_label = "Delete"
             delete_x = DETAIL_LEFT + 20
             self._addstr(screen, y, CALENDAR_LEFT, habit_label)
-            self._addstr(screen, y, delete_x, delete_label, self._danger_style())
-            self.hitboxes.append(HitBox("delete_habit", y, delete_x, delete_x + len(delete_label) - 1, (habit.habit_id, habit.name)))
+            self._draw_menu_option(
+                screen, y, delete_x, delete_label, "delete_habit", (habit.habit_id, habit.name), self._danger_style()
+            )
 
         if len(habits) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
-        self._draw_message(screen, 16)
+        self._draw_menu_status(screen, 16)
 
     def _draw_rename_habits_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -2688,7 +2722,7 @@ class CalendarApp:
         habits = self.store.list_habits()
         if not habits:
             self._addstr(screen, 4, CALENDAR_LEFT, "No habits to rename.")
-            self._draw_message(screen)
+            self._draw_menu_status(screen)
             return
 
         self._addstr(screen, 3, CALENDAR_LEFT, "Rename Habit", curses.A_BOLD)
@@ -2700,12 +2734,11 @@ class CalendarApp:
             rename_label = "Rename"
             rename_x = DETAIL_LEFT + 20
             self._addstr(screen, y, CALENDAR_LEFT, habit_label)
-            self._addstr(screen, y, rename_x, rename_label, curses.A_BOLD)
-            self.hitboxes.append(HitBox("rename_habit", y, rename_x, rename_x + len(rename_label) - 1, (habit.habit_id, habit.name)))
+            self._draw_menu_option(screen, y, rename_x, rename_label, "rename_habit", (habit.habit_id, habit.name))
 
         if len(habits) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} habits.")
-        self._draw_message(screen, 16)
+        self._draw_menu_status(screen, 16)
 
     def _draw_archive_habits_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -2716,7 +2749,7 @@ class CalendarApp:
         habits = self.store.list_active_habits()
         if not habits:
             self._addstr(screen, 4, CALENDAR_LEFT, "No active habits to archive.")
-            self._draw_message(screen)
+            self._draw_menu_status(screen)
             return
 
         self._addstr(screen, 3, CALENDAR_LEFT, "Archive Habit", curses.A_BOLD)
@@ -2728,14 +2761,11 @@ class CalendarApp:
             archive_label = "Archive"
             archive_x = DETAIL_LEFT + 20
             self._addstr(screen, y, CALENDAR_LEFT, habit_label)
-            self._addstr(screen, y, archive_x, archive_label, curses.A_BOLD)
-            self.hitboxes.append(
-                HitBox("archive_habit", y, archive_x, archive_x + len(archive_label) - 1, (habit.habit_id, habit.name))
-            )
+            self._draw_menu_option(screen, y, archive_x, archive_label, "archive_habit", (habit.habit_id, habit.name))
 
         if len(habits) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} active habits.")
-        self._draw_message(screen, 16)
+        self._draw_menu_status(screen, 16)
 
     def _draw_archived_habits_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -2746,7 +2776,7 @@ class CalendarApp:
         habits = self.store.list_archived_habits()
         if not habits:
             self._addstr(screen, 4, CALENDAR_LEFT, "No archived habits.")
-            self._draw_message(screen)
+            self._draw_menu_status(screen)
             return
 
         self._addstr(screen, 3, CALENDAR_LEFT, "Archived Habit", curses.A_BOLD)
@@ -2767,30 +2797,16 @@ class CalendarApp:
             resurrect_x = DETAIL_LEFT + 20
             stats_x = resurrect_x + len(resurrect_label) + 3
             self._addstr(screen, y, CALENDAR_LEFT, habit_label)
-            self._addstr(screen, y, resurrect_x, resurrect_label, curses.A_BOLD)
-            self._addstr(screen, y, stats_x, stats_label, curses.A_BOLD)
-            self.hitboxes.append(
-                HitBox(
-                    "resurrect_habit",
-                    y,
-                    resurrect_x,
-                    resurrect_x + len(resurrect_label) - 1,
-                    (habit.habit_id, habit.name),
-                )
+            self._draw_menu_option(
+                screen, y, resurrect_x, resurrect_label, "resurrect_habit", (habit.habit_id, habit.name)
             )
-            self.hitboxes.append(
-                HitBox(
-                    "archived_habit_stats",
-                    y,
-                    stats_x,
-                    stats_x + len(stats_label) - 1,
-                    (habit.habit_id, habit.name),
-                )
+            self._draw_menu_option(
+                screen, y, stats_x, stats_label, "archived_habit_stats", (habit.habit_id, habit.name)
             )
 
         if len(habits) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} archived habits.")
-        self._draw_message(screen, 16)
+        self._draw_menu_status(screen, 16)
 
     def _draw_archive_period_list_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -2800,7 +2816,7 @@ class CalendarApp:
 
         if self.selected_period_habit_id is None:
             self._addstr(screen, 4, CALENDAR_LEFT, "No habit selected.")
-            self._draw_message(screen)
+            self._draw_menu_status(screen)
             return
 
         self._addstr(screen, 3, CALENDAR_LEFT, self._truncate(self.selected_period_habit_name, 42), curses.A_BOLD)
@@ -2808,7 +2824,7 @@ class CalendarApp:
         periods = self.store.active_periods_for_habit(self.selected_period_habit_id)
         if not periods:
             self._addstr(screen, 5, CALENDAR_LEFT, "No archive history yet.")
-            self._draw_message(screen)
+            self._draw_menu_status(screen)
             return
 
         ordered = list(reversed(periods))
@@ -2818,20 +2834,19 @@ class CalendarApp:
                 f"{period.period_number}) {self._truncate(self.selected_period_habit_name, 24)} "
                 f"({period.start_date.isoformat()}-{period.end_date.isoformat()})"
             )
-            self._addstr(screen, y, CALENDAR_LEFT, row_label)
-            self.hitboxes.append(
-                HitBox(
-                    "archive_period_row",
-                    y,
-                    CALENDAR_LEFT,
-                    CALENDAR_LEFT + len(row_label) - 1,
-                    (period.period_number, period.start_date.isoformat(), period.end_date.isoformat()),
-                )
+            self._draw_menu_option(
+                screen,
+                y,
+                CALENDAR_LEFT,
+                row_label,
+                "archive_period_row",
+                (period.period_number, period.start_date.isoformat(), period.end_date.isoformat()),
+                curses.A_NORMAL,
             )
 
         if len(ordered) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(ordered)} archive periods.")
-        self._draw_message(screen, 16)
+        self._draw_menu_status(screen, 16)
 
     def _draw_archive_period_stats_page(self, screen: "curses.window") -> None:
         height, _ = screen.getmaxyx()
@@ -2851,7 +2866,7 @@ class CalendarApp:
         ):
             self._addstr(screen, 4, CALENDAR_LEFT, "No archive period selected.")
             self._draw_command_footer(screen, footer_y)
-            self._draw_message(screen, message_y)
+            self._draw_menu_status(screen, message_y)
             return
 
         stats = self.store.habit_stats_for_period(
@@ -2872,23 +2887,17 @@ class CalendarApp:
         self._addstr(screen, 6, CALENDAR_LEFT, self._truncate(longest_label, 70))
 
         history_label = f"Streak History: {len(stats.streaks)}"
-        self._addstr(screen, 8, CALENDAR_LEFT, history_label, curses.A_BOLD)
-        self.hitboxes.append(
-            HitBox("archive_period_streak_history_link", 8, CALENDAR_LEFT, CALENDAR_LEFT + len(history_label) - 1)
-        )
+        self._draw_menu_option(screen, 8, CALENDAR_LEFT, history_label, "archive_period_streak_history_link")
 
         self._addstr(screen, 10, CALENDAR_LEFT, f"Period start: {self.selected_period_start.isoformat()}")
         self._addstr(screen, 11, CALENDAR_LEFT, f"Period end: {self.selected_period_end.isoformat()}")
 
         notes_label = f"Notes: {stats.note_count}"
         notes_style = curses.A_BOLD if stats.note_count else curses.A_DIM
-        self._addstr(screen, 13, CALENDAR_LEFT, notes_label, notes_style)
-        self.hitboxes.append(
-            HitBox("archive_period_notes_link", 13, CALENDAR_LEFT, CALENDAR_LEFT + len(notes_label) - 1)
-        )
+        self._draw_menu_option(screen, 13, CALENDAR_LEFT, notes_label, "archive_period_notes_link", None, notes_style)
 
         self._draw_command_footer(screen, footer_y)
-        self._draw_message(screen, message_y)
+        self._draw_menu_status(screen, message_y)
 
     def _draw_archive_period_streak_history_page(self, screen: "curses.window") -> None:
         height, _ = screen.getmaxyx()
@@ -2910,7 +2919,7 @@ class CalendarApp:
             self.streaks_scroll = 0
             self._addstr(screen, 4, CALENDAR_LEFT, "No archive period selected.")
             self._draw_command_footer(screen, footer_y)
-            self._draw_message(screen, message_y)
+            self._draw_menu_status(screen, message_y)
             return
 
         stats = self.store.habit_stats_for_period(
@@ -2925,7 +2934,7 @@ class CalendarApp:
             self.streaks_scroll = 0
             self._addstr(screen, 6, CALENDAR_LEFT, "No done streaks yet.")
             self._draw_command_footer(screen, footer_y)
-            self._draw_message(screen, message_y)
+            self._draw_menu_status(screen, message_y)
             return
 
         max_scroll = max(0, len(stats.streaks) - visible_count)
@@ -2943,7 +2952,7 @@ class CalendarApp:
             last = self.streaks_scroll + len(visible_streaks)
             self._addstr(screen, status_y, CALENDAR_LEFT, f"Showing {first}-{last} of {len(stats.streaks)}. Up/Down scroll.")
         self._draw_command_footer(screen, footer_y)
-        self._draw_message(screen, message_y)
+        self._draw_menu_status(screen, message_y)
 
     def _draw_archive_period_notes_page(self, screen: "curses.window") -> None:
         height, _ = screen.getmaxyx()
@@ -2964,7 +2973,7 @@ class CalendarApp:
         ):
             self.habit_notes_scroll = 0
             self._addstr(screen, 5, CALENDAR_LEFT, "No archive period selected.")
-            self._draw_message(screen, message_y)
+            self._draw_menu_status(screen, message_y)
             return
 
         notes = self.store.notes_for_habit_in_range(
@@ -2973,7 +2982,7 @@ class CalendarApp:
         if not notes:
             self.habit_notes_scroll = 0
             self._addstr(screen, 5, CALENDAR_LEFT, "No notes exist for this archive period.")
-            self._draw_message(screen, message_y)
+            self._draw_menu_status(screen, message_y)
             return
 
         max_scroll = max(0, len(notes) - visible_count)
@@ -2982,23 +2991,21 @@ class CalendarApp:
 
         for index, note in enumerate(visible_notes):
             y = 5 + index
-            label = note_title_for(note.habit_name, note.note_date)
-            self._addstr(screen, y, CALENDAR_LEFT, self._truncate(label, 70), curses.A_BOLD)
-            self.hitboxes.append(
-                HitBox(
-                    "archive_period_note",
-                    y,
-                    CALENDAR_LEFT,
-                    CALENDAR_LEFT + min(len(label), 70) - 1,
-                    (note.habit_id, note.habit_name, note.note_date),
-                )
+            label = self._truncate(note_title_for(note.habit_name, note.note_date), 70)
+            self._draw_menu_option(
+                screen,
+                y,
+                CALENDAR_LEFT,
+                label,
+                "archive_period_note",
+                (note.habit_id, note.habit_name, note.note_date),
             )
 
         if len(notes) > visible_count:
             first = self.habit_notes_scroll + 1
             last = self.habit_notes_scroll + len(visible_notes)
             self._addstr(screen, status_y, CALENDAR_LEFT, f"Showing {first}-{last} of {len(notes)}. Up/Down scroll.")
-        self._draw_message(screen, message_y)
+        self._draw_menu_status(screen, message_y)
 
     def _draw_challenge_mode_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -3007,10 +3014,9 @@ class CalendarApp:
         self.hitboxes.append(HitBox("back", 1, CALENDAR_LEFT, CALENDAR_LEFT + len(back_label) - 1))
 
         create_label = "Create Challenge"
-        self._addstr(screen, 4, CALENDAR_LEFT, create_label, curses.A_BOLD)
+        self._draw_menu_option(screen, 4, CALENDAR_LEFT, create_label, "challenge_create")
         self._addstr(screen, 6, CALENDAR_LEFT, "Challenges are goals; habits keep running after they end.")
-        self.hitboxes.append(HitBox("challenge_create", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(create_label) - 1))
-        self._draw_message(screen, 16)
+        self._draw_menu_status(screen, 16)
 
     def _draw_create_challenge_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -3020,11 +3026,9 @@ class CalendarApp:
 
         existing_label = "Existing Habit"
         new_label = "New Habit"
-        self._addstr(screen, 4, CALENDAR_LEFT, existing_label, curses.A_BOLD)
-        self._addstr(screen, 6, CALENDAR_LEFT, new_label, curses.A_BOLD)
-        self.hitboxes.append(HitBox("challenge_existing", 4, CALENDAR_LEFT, CALENDAR_LEFT + len(existing_label) - 1))
-        self.hitboxes.append(HitBox("challenge_new", 6, CALENDAR_LEFT, CALENDAR_LEFT + len(new_label) - 1))
-        self._draw_message(screen, 16)
+        self._draw_menu_option(screen, 4, CALENDAR_LEFT, existing_label, "challenge_existing")
+        self._draw_menu_option(screen, 6, CALENDAR_LEFT, new_label, "challenge_new")
+        self._draw_menu_status(screen, 16)
 
     def _draw_existing_challenge_habits_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -3035,7 +3039,7 @@ class CalendarApp:
         habits = self.store.list_active_habits()
         if not habits:
             self._addstr(screen, 4, CALENDAR_LEFT, "No active habits available.")
-            self._draw_message(screen)
+            self._draw_menu_status(screen)
             return
 
         self._addstr(screen, 3, CALENDAR_LEFT, "Choose an active habit for this challenge.", curses.A_BOLD)
@@ -3045,14 +3049,13 @@ class CalendarApp:
             choose_label = "Choose"
             choose_x = DETAIL_LEFT + 20
             self._addstr(screen, y, CALENDAR_LEFT, habit_label)
-            self._addstr(screen, y, choose_x, choose_label, curses.A_BOLD)
-            self.hitboxes.append(
-                HitBox("challenge_existing_habit", y, choose_x, choose_x + len(choose_label) - 1, (habit.habit_id, habit.name))
+            self._draw_menu_option(
+                screen, y, choose_x, choose_label, "challenge_existing_habit", (habit.habit_id, habit.name)
             )
 
         if len(habits) > 9:
             self._addstr(screen, 15, CALENDAR_LEFT, f"Showing 9 of {len(habits)} active habits.")
-        self._draw_message(screen, 16)
+        self._draw_menu_status(screen, 16)
 
     def _draw_challenge_end_options_page(self, screen: "curses.window") -> None:
         back_label = "< Back"
@@ -3064,11 +3067,9 @@ class CalendarApp:
         self._addstr(screen, 3, CALENDAR_LEFT, self._truncate(target, 42), curses.A_BOLD)
         duration_label = "Set Duration"
         end_date_label = "Pick Ending Date"
-        self._addstr(screen, 5, CALENDAR_LEFT, duration_label, curses.A_BOLD)
-        self._addstr(screen, 7, CALENDAR_LEFT, end_date_label, curses.A_BOLD)
-        self.hitboxes.append(HitBox("challenge_duration", 5, CALENDAR_LEFT, CALENDAR_LEFT + len(duration_label) - 1))
-        self.hitboxes.append(HitBox("challenge_end_date", 7, CALENDAR_LEFT, CALENDAR_LEFT + len(end_date_label) - 1))
-        self._draw_message(screen, 16)
+        self._draw_menu_option(screen, 5, CALENDAR_LEFT, duration_label, "challenge_duration")
+        self._draw_menu_option(screen, 7, CALENDAR_LEFT, end_date_label, "challenge_end_date")
+        self._draw_menu_status(screen, 16)
 
     def _draw_challenge_date_picker_page(self, screen: "curses.window", height: int, width: int) -> None:
         today = date.today()
@@ -3128,8 +3129,8 @@ class CalendarApp:
         height, _ = screen.getmaxyx()
         footer_y = self._main_footer_y(height)
         self._draw_message(screen, footer_y)
-        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Keys: / cmd, h help, q quit, Left/Right month, Up/Down habits, t, a.")
-        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "Calendar: + done, ! missed, yellow dates have past pending tasks.")
+        self._addstr(screen, footer_y + 2, CALENDAR_LEFT, "Keys: / cmd, h help, q quit, Left/Right month, Up/Down or j/k habits.")
+        self._addstr(screen, footer_y + 3, CALENDAR_LEFT, "t today, a add habit; + done, ! missed, yellow = past pending.")
 
     @staticmethod
     def _main_footer_y(height: int) -> int:
@@ -3144,6 +3145,18 @@ class CalendarApp:
     def _draw_message(self, screen: "curses.window", y: int = CALENDAR_TOP + 8) -> None:
         if self.message:
             self._addstr(screen, y, CALENDAR_LEFT, self._truncate(self.message, 70))
+
+    def _draw_menu_status(self, screen: "curses.window", y: int = CALENDAR_TOP + 8) -> None:
+        if self.message:
+            self._addstr(screen, y, CALENDAR_LEFT, self._truncate(self.message, 70))
+        else:
+            self._addstr(
+                screen,
+                y,
+                CALENDAR_LEFT,
+                "Keys: Up/Down or j/k select, Enter or l activate, h back.",
+                curses.A_DIM,
+            )
 
     def _prompt(
         self,
@@ -3214,6 +3227,27 @@ class CalendarApp:
 
     def _danger_style(self) -> int:
         return self._color(4) | curses.A_BOLD
+
+    def _selected_style(self, style: int) -> int:
+        return (style & ~curses.A_COLOR) | self._color(2)
+
+    def _draw_menu_option(
+        self,
+        screen: "curses.window",
+        y: int,
+        x: int,
+        label: str,
+        hitbox_name: str,
+        value: Any = None,
+        style: int = curses.A_BOLD,
+        end_x: int | None = None,
+    ) -> None:
+        is_selected = len(self._current_menu_items) == self.menu_index
+        draw_style = self._selected_style(style) if is_selected else style
+        self._addstr(screen, y, x, label, draw_style)
+        hitbox = HitBox(hitbox_name, y, x, end_x if end_x is not None else x + len(label) - 1, value)
+        self.hitboxes.append(hitbox)
+        self._current_menu_items.append(hitbox)
 
     def _status_style(self, status: str) -> int:
         if status == STATUS_MISSED:
@@ -3300,12 +3334,11 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
 
         if key in (ord("q"), ord("Q")):
             break
-        if app.view != "main" and key in (ord("b"), ord("B")):
+        if app.view != "main" and app.view not in MENU_VIEWS and key in (ord("b"), ord("B")):
             app.go_back()
         elif key == 27:
-            if app.view == "main":
-                break
-            app.go_back()
+            if app.view != "main" and app.view not in MENU_VIEWS:
+                app.go_back()
         elif key == ord("/"):
             if not app.run_command(screen):
                 break
@@ -3315,10 +3348,10 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             app.move_month(-1)
         elif app.view == "main" and key == curses.KEY_RIGHT:
             app.move_month(1)
-        elif app.view == "main" and key == curses.KEY_UP:
+        elif app.view == "main" and key in (curses.KEY_UP, ord("k"), ord("K")):
             height, _ = screen.getmaxyx()
             app.scroll_main_habits(-1, app._main_habit_page_size(height))
-        elif app.view == "main" and key == curses.KEY_DOWN:
+        elif app.view == "main" and key in (curses.KEY_DOWN, ord("j"), ord("J")):
             height, _ = screen.getmaxyx()
             app.scroll_main_habits(1, app._main_habit_page_size(height))
         elif app.view == "main" and key == curses.KEY_PPAGE:
@@ -3407,6 +3440,14 @@ def run_curses(screen: "curses.window", app: CalendarApp) -> None:
             app.selected_day = today.day
             app.main_habit_scroll = 0
             app.message = ""
+        elif app.view in MENU_VIEWS and key in (curses.KEY_UP, ord("k"), ord("K")):
+            app.move_menu_selection(-1)
+        elif app.view in MENU_VIEWS and key in (curses.KEY_DOWN, ord("j"), ord("J")):
+            app.move_menu_selection(1)
+        elif app.view in MENU_VIEWS and key in (curses.KEY_ENTER, 10, 13, ord("l"), ord("L"), ord(" ")):
+            app.activate_menu_selection(screen)
+        elif app.view in MENU_VIEWS and key in (ord("h"), ord("H")):
+            app.go_back()
         elif key == curses.KEY_MOUSE:
             try:
                 _, x, y, _, button_state = curses.getmouse()

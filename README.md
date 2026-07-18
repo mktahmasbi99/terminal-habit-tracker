@@ -96,7 +96,7 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Press `Esc` while adding a habit to cancel without saving
 - Click `Pending`, `Done`, or `Missed` to set a habit status for the selected date
 - Click `+Note` to add a note for a habit on the selected date, or highlighted `Note` to reopen an existing note
-- Use Up/Down or Page Up/Page Down on the main screen to scroll the selected day's habit list when needed
+- Use Up/Down, `j`/`k`, or Page Up/Page Down on the main screen to scroll the selected day's habit list when needed
 - Click `Notifications` when shown to review past dates with pending habits, then click a notification to jump to that date
 - Use Up/Down or Page Up/Page Down to scroll the notifications page when needed
 - Press `/` to enter a command; matching commands are suggested as you type, and `Tab` completes a single match
@@ -116,9 +116,13 @@ python3 terminal_habit_tracker.py --restore /path/to/habits-backup.sqlite3 --for
 - Use `/quit` to quit from the command prompt
 - Press left/right arrows to move between months
 - Press `t` to jump to today
-- Press `b` to go back from secondary screens
-- Press `Esc` to go back from secondary screens or cancel a command prompt
-- Press `q` or `Esc` on the main screen to quit
+- In `/`-command menu screens (Manage Habits, Backups, Help, Stats details,
+  Challenge Mode, Archive, and their sub-screens), use Up/Down or `j`/`k` to
+  move the highlighted item, `Enter` or `l` to select it, and `h` to go back
+- Press `b` or `Esc` to go back on other secondary screens (Notifications,
+  Notes, Habit Notes, Stats, Streak History), or `Esc` to cancel a command
+  prompt
+- Press `q` on the main screen to quit
 
 ## Habit Status Behavior
 
