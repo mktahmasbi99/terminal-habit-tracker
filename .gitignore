@@ -27,7 +27,6 @@ dist/
 /prompts.txt
 /todo-ideas.txt
 /commit-checklist.txt
-/AGENTS.md
 
 # OS/editor noise
 .DS_Store
